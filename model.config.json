@@ -1,0 +1,24 @@
+{
+  "claude-default": {
+    "provider": "anthropic",
+    "modelId": "claude-sonnet-5",
+    "maxTokens": 4096,
+    "temperature": 0.7
+  },
+  "gpt-default": {
+    "provider": "openai",
+    "modelId": "gpt-5.6-luna",
+    "maxTokens": 4096,
+    "temperature": 0.7
+  },
+  "codex-default": {
+    "provider": "openai-codex",
+    "modelId": "gpt-5.6-luna",
+    "maxTokens": 4096
+  },
+  "codex-alt": {
+    "provider": "openai-codex",
+    "modelId": "gpt-5.5",
+    "maxTokens": 4096
+  }
+}
