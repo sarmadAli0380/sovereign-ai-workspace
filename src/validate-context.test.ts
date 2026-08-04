@@ -131,3 +131,21 @@ test("REGRESSION: a null context is reported, not thrown", () => {
   assert.equal(issues.length, 1);
   assert.equal(issues[0]?.path, "context");
 });
+
+test("REGRESSION: a tool name the provider would reject is caught pre-flight", () => {
+  const context: Context = {
+    ...userContext(),
+    tools: [{ name: "get weather", description: "d", parameters: Type.Object({}) }],
+  };
+  const issues = collectContextIssues(context);
+  assert.equal(issues.length, 1);
+  assert.match(issues[0]!.message, /a-zA-Z0-9_-/);
+});
+
+test("ordinary tool names still pass", () => {
+  const context: Context = {
+    ...userContext(),
+    tools: [{ name: "get_weather-2", description: "d", parameters: Type.Object({}) }],
+  };
+  assert.deepEqual(collectContextIssues(context), []);
+});

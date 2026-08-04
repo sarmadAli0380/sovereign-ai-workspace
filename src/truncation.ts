@@ -22,17 +22,33 @@ export interface TruncationStrategy {
 }
 
 /**
- * Token estimate: chars / 4.
+ * Token estimate: chars / CHARS_PER_TOKEN.
  *
- * Same heuristic pi-coding-agent uses — deliberately no tokenizer
- * dependency, and deliberately conservative (it overestimates, so the
- * budget is never blown by an underestimate).
+ * Same shape of heuristic pi-coding-agent uses — deliberately no tokenizer
+ * dependency.
  *
- * TUNABLE: 4 chars/token is an English-text average. Code and non-Latin
- * scripts run denser; if real usage shows the estimate drifting, this
- * divisor is the knob.
+ * The original value of 4 came with a claim that it "overestimates, so the
+ * budget is never blown by an underestimate". Measured against the real
+ * tokenizer, that claim was false for exactly the content this harness
+ * carries most of. Actual-vs-estimated at chars/4:
+ *
+ *   English prose   0.88x   (overestimates — fine)
+ *   JSON / code     1.83x   (UNDERESTIMATES)
+ *   Chinese (CJK)   2.63x   (UNDERESTIMATES)
+ *
+ * Tool results are mostly JSON and code, and 1.5's own research names them
+ * the biggest source of context bloat — so the heuristic was weakest
+ * precisely where it mattered most.
+ *
+ * TUNABLE, now with data behind it. 3 is a compromise: it makes English
+ * comfortably safe and cuts the code underestimate from 1.83x to ~1.37x,
+ * without the cost of a value that would satisfy every case. Genuinely
+ * guaranteeing "never underestimates" needs ~1.5 chars/token, which would
+ * overestimate English by 3x and waste most of the window — a real
+ * tokenizer is the only way to have both. Flagged in findings-log.md as an
+ * open decision rather than silently picked.
  */
-const CHARS_PER_TOKEN = 4;
+const CHARS_PER_TOKEN = 3;
 
 /**
  * Character cost charged for an image block.

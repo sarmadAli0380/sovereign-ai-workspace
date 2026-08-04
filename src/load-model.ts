@@ -24,6 +24,34 @@ import { HarnessError } from "./types.ts";
 /** Mirrors pi-ai's `Transport` union — a typo here silently changes behaviour. */
 const VALID_TRANSPORTS = new Set(["sse", "websocket", "websocket-cached", "auto"]);
 
+/**
+ * Providers whose pi-ai API implementation drops `maxTokens` entirely.
+ * Verified by grepping the api module for any max-tokens field name.
+ */
+const PROVIDERS_IGNORING_MAX_TOKENS = new Set(["openai-codex"]);
+
+const warnedConfigKeys = new Set<string>();
+
+/**
+ * Warns once per configKey that `maxTokens` will not be applied.
+ *
+ * A silent no-op on a spend-limiting field is the failure mode this project
+ * already rejected for `fallbackConfigKey` and friends; the difference is
+ * that `maxTokens` is real for other providers, so it can't just be
+ * rejected. A warning keeps it usable without letting anyone believe their
+ * response is bounded when it isn't.
+ */
+function warnIfMaxTokensIgnored(entry: ConfigEntry, configKey: string): void {
+  if (!PROVIDERS_IGNORING_MAX_TOKENS.has(entry.provider)) return;
+  if (warnedConfigKeys.has(configKey)) return;
+  warnedConfigKeys.add(configKey);
+
+  console.warn(
+    `[harness] configKey "${configKey}": provider "${entry.provider}" ignores maxTokens ` +
+      `(${entry.maxTokens}) — pi-ai's ${entry.provider} API never sends it. Responses are NOT bounded.`,
+  );
+}
+
 export interface ResolvedModel {
   model: Model<Api>;
   entry: ConfigEntry;
@@ -114,6 +142,8 @@ export function loadModel(
       `No model "${entry.modelId}" registered for provider "${entry.provider}" (configKey "${configKey}").`,
     );
   }
+
+  warnIfMaxTokensIgnored(entry, configKey);
 
   return { model, entry, configKey };
 }

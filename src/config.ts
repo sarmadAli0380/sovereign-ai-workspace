@@ -22,6 +22,22 @@ import { HarnessError } from "./types.ts";
 export interface ConfigEntry {
   provider: string;
   modelId: string;
+  /**
+   * WARNING — silently ignored by `openai-codex`.
+   *
+   * `callOptions()` forwards this correctly, but pi-ai's
+   * `openai-codex-responses` API never puts it on the wire: that file
+   * contains zero references to `maxTokens`/`max_output_tokens`/
+   * `max_tokens`, where `openai-responses` and `anthropic-messages` both
+   * forward it. Measured live: `maxTokens: 40` produced a 736-token
+   * response.
+   *
+   * Kept required because it IS honoured by every other provider, and
+   * dropping it would break them. But note the tension with this file's own
+   * rule that a field nothing reads should be rejected rather than
+   * accepted — for codex, this is that field. `loadModel()` warns rather
+   * than silently accepting it. Do not rely on it to bound spend on codex.
+   */
   maxTokens: number;
   /**
    * Optional — CORRECTION to 1.4, forced by a real provider constraint.

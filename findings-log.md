@@ -778,6 +778,148 @@ Suite is now 96 tests; every fix above has a regression test named
 
 ---
 
+## Live QA pass, 2026-08-04 (35 real calls)
+
+Second QA pass with the live-call restriction lifted, aimed squarely at what
+the offline pass couldn't reach. Four new defects, plus the first hard
+evidence for the offline pass's headline finding.
+
+### Finding 1 confirmed against a real provider
+
+The orphaned-tool-result case was previously argued from pi-ai's conversion
+code. It is now observed. Sending the pre-fix shape to codex:
+
+```
+B: [toolResult] alone   -> error: "No tool call found for function call
+                            output with call_id call_ArbEmZ..."
+C: [user, toolResult]   -> same rejection
+D: post-fix output [assistant(toolCall), toolResult]
+                        -> stop, "Paris is currently 18°C and sunny."
+```
+
+So the bug produced a hard provider rejection, and the fix's deliberate
+go-over-budget choice produces a context the provider accepts. Re-running
+the 5,000-case fuzz against the fixed strategy: **orphanFails 0** (was 997).
+
+Worth noting the QA agent also retired its own earlier assertion:
+`budgetFails 1058` in that fuzz is not a defect, it is the fix's documented
+trade-off, so the old invariant was simply the wrong thing to assert.
+Worst observed overshoot was 272 tokens against a 58-token budget, bounded
+by the size of a single tool-call group.
+
+### New: `maxTokens` is a silent no-op on `openai-codex` (MEDIUM)
+
+`callOptions()` forwards `maxTokens` correctly, but pi-ai's
+`openai-codex-responses` API never puts it on the wire. Verified by grep —
+that module contains **zero** references to any max-tokens field name,
+against 3 in `openai-responses` and 8 in `anthropic-messages`.
+
+Measured live: `maxTokens: 40` returned a **736-token** response costing
+$0.0044. The field is validated as required and positive, and both codex
+entries in `model.config.json` carry a value that does nothing.
+
+This directly contradicts this project's own stated rule — `config.ts`
+rejects `fallbackConfigKey`/`routedVia`/`apiKeyEnv` precisely because
+"silently accepting a field that nothing reads is worse than saying it
+isn't wired up yet." For codex, `maxTokens` is that field.
+
+It can't simply be rejected: it is real and honoured for every other
+provider. `loadModel()` now warns once per configKey instead, so the field
+stays usable without letting anyone believe their spend is bounded when it
+isn't.
+
+### New: the chars/4 estimator underestimates the content it matters most for (MEDIUM)
+
+The heuristic claimed it "overestimates, so the budget is never blown by an
+underestimate". Measured against the real tokenizer, that was false for
+exactly the content this harness carries most:
+
+```
+English prose   0.88x  (overestimates — fine)
+JSON / code     1.83x  UNDERESTIMATES
+Chinese (CJK)   2.63x  UNDERESTIMATES
+```
+
+Tool results are mostly JSON and code, and 1.5's own research names them
+the single biggest source of context bloat — so the estimator was weakest
+precisely where it was load-bearing. Demonstrated end to end: a manager
+sized for a 20,000-token model reported `3052 / 3616 — within budget` while
+the provider counted **4,121** input tokens, already over its own budget.
+
+Same class as the image finding: the budget invariant was unsound for a
+content type the harness is expected to carry.
+
+Divisor moved 4 → 3, and the false claim removed from the comment. **This
+is a mitigation, not a fix, and the residual is an open decision:** at 3,
+code still underestimates ~1.37x. Genuinely guaranteeing "never
+underestimates" needs ~1.5 chars/token, which would overestimate English by
+3x and waste most of the window. Having both requires a real tokenizer
+dependency — deliberately not taken unilaterally, since 1.5 chose the
+no-tokenizer approach on purpose.
+
+### New: pre-flight guard accepted tool names providers reject (LOW)
+
+`validateToolSchema` checked only that `name` was a non-empty string.
+Providers enforce `^[a-zA-Z0-9_-]+$`. A name with a space passed pre-flight
+and was rejected by codex: *"Invalid 'tools[0].name': string does not match
+pattern."* The guard exists so misconfiguration surfaces locally instead of
+as a confusing provider error — this was a paid round trip to learn
+something checkable for free. Now validated. (Long names and empty
+descriptions were accepted by the provider, so only the character class is
+a real rule.)
+
+### New: the finding-2 fix introduced a regression (LOW)
+
+Wiring in argument validation dropped the old `?? {}` fallback, so a
+`ToolCall` with absent `arguments` began failing validation with "must be
+object" instead of running — breaking zero-argument tools. Not reachable
+from a real provider (pi-ai's `parseStreamingJson` returns `{}` on every
+failure path), so it only bites a hand-built or replayed ToolCall.
+
+Recording it because the lesson generalises: **the fix for a validation gap
+introduced a new validation bug**, and it took a second adversarial pass to
+notice. Arguments are now normalised before validation.
+
+### Live probes that held up
+
+Negative results, all against `openai-codex`:
+
+- **Parallel tool calls** — the model emitted two `toolCall` blocks in one
+  turn; dispatch ran both, `appendAll` stored both, follow-up accepted. The
+  composite codex id format (`call_xxx|fc_xxx`) round-trips intact through
+  `toolCallId`.
+- **Oversized tool result** — 44,000 chars capped to 16,071 with the
+  truncation marker, accepted, and the model answered correctly from the
+  truncated content.
+- **Empty tool output** — accepted; no normalisation needed.
+- **Truncation mid-conversation** — drop-oldest evicted the head at turn 3
+  and every later call succeeded. Notably a context whose *first* message is
+  an assistant message carrying a `thinking` block was accepted, so
+  re-sending reasoning after truncation does not break the codex Responses
+  API.
+- **Retry against a real failure** — a genuine `upstream connect error or
+  disconnect/reset before headers` was classified retryable and succeeded on
+  retry 1/3. The policy works against real transport failures, not just
+  simulated ones.
+- **`usage.cost`** is fully populated on a subscription account, so
+  verify-swap's required-field check is meaningful rather than vacuous.
+- **`temperature` omission** — no `Unsupported parameter` error in 35 calls.
+  The 1.4 correction is sound.
+
+### Still not covered
+
+- The credential-store race needs two providers refreshing concurrently;
+  only one is reachable, and proving it live would mean writing to the real
+  credential file. Verified offline against a temp-file store instead.
+- True context-window overflow (~1.1M chars in one call) was judged outside
+  the spend budget, so the estimator finding is measured by ratio and a
+  scaled-down manager rather than an actual overflow rejection.
+- Anthropic-specific paths remain inference; the live confirmation is
+  codex's equivalent rejection, not Anthropic's.
+- `models.stream()` is never called by the harness, so it stays unexercised.
+
+---
+
 ## Conceptual framework
 
 Applied a structural-vs-dynamic lens across the roadmap (full breakdown in

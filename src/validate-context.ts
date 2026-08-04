@@ -21,6 +21,9 @@ export interface ContextIssue {
   message: string;
 }
 
+/** The tool-name character class every provider enforces. */
+const TOOL_NAME_PATTERN = /^[a-zA-Z0-9_-]+$/;
+
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -46,6 +49,15 @@ function validateToolSchema(tool: Tool, index: number, issues: ContextIssue[]): 
 
   if (typeof tool.name !== "string" || tool.name.length === 0) {
     issues.push({ path: `${path}.name`, message: "Tool name must be a non-empty string." });
+  } else if (!TOOL_NAME_PATTERN.test(tool.name)) {
+    // Providers enforce this pattern themselves and reject the whole request,
+    // so catching it here is the difference between a local error and a paid
+    // round trip that fails. Confirmed live: codex returns "Invalid
+    // 'tools[0].name': string does not match pattern '^[a-zA-Z0-9_-]+$'".
+    issues.push({
+      path: `${path}.name`,
+      message: `Tool name "${tool.name}" must match ${TOOL_NAME_PATTERN.source} — providers reject anything else.`,
+    });
   }
 
   const params: unknown = tool.parameters;

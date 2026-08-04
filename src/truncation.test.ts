@@ -53,9 +53,10 @@ function toolResult(id: string, text = "sunny", name = "get_weather"): ToolResul
   };
 }
 
-test("estimates tokens as chars/4 plus per-message overhead", () => {
-  // 8 chars / 4 = 2, plus 4 overhead.
-  assert.equal(estimateTokens(user("abcdefgh")), 6);
+test("estimates tokens as chars/CHARS_PER_TOKEN plus per-message overhead", () => {
+  // 8 chars / 3 = 2.67 -> ceil 3, plus 4 overhead. The divisor moved from 4
+  // to 3 after live measurement showed chars/4 underestimating code by 1.83x.
+  assert.equal(estimateTokens(user("abcdefgh")), 7);
 });
 
 test("estimates across every message role without throwing", () => {

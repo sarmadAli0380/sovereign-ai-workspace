@@ -237,3 +237,22 @@ test("valid arguments still reach the handler", async () => {
   assert.equal(result.isError, false);
   assert.match(textOf(result), /sunny in Paris/);
 });
+
+test("REGRESSION: a zero-argument tool works with absent `arguments`", async () => {
+  const registry = new ToolRegistry();
+  let ran = false;
+  registry.register({
+    definition: { name: "ping", description: "no args", parameters: Type.Object({}) },
+    async execute() {
+      ran = true;
+      return { content: [{ type: "text", text: "pong" }] };
+    },
+  });
+
+  // pi-ai always emits `{}`, but a hand-built or replayed ToolCall may not.
+  const bare = { type: "toolCall", id: "c1", name: "ping" } as ToolCall;
+  const result = await dispatchToolCall(bare, registry);
+
+  assert.equal(ran, true, "handler should run when arguments are absent");
+  assert.equal(result.isError, false);
+});

@@ -96,9 +96,16 @@ export async function dispatchToolCall(
   //
   // Validating here gives the model the actionable error the ADR expected,
   // in the same `isError` shape as every other failure.
+  // `arguments` is normalised to `{}` before validation. Wiring validation in
+  // originally dropped the old `?? {}` fallback, which broke zero-argument
+  // tools: `validateToolArguments` rejects an absent `arguments` with
+  // "must be object". pi-ai itself always emits `{}` so a real provider never
+  // hits this, but a hand-built or replayed ToolCall does.
+  const normalized: ToolCall = { ...toolCall, arguments: toolCall.arguments ?? {} };
+
   let args: Record<string, unknown>;
   try {
-    args = validateToolArguments(handler.definition, toolCall) as Record<string, unknown>;
+    args = validateToolArguments(handler.definition, normalized) as Record<string, unknown>;
   } catch (error) {
     return errorResult(toolCall, error instanceof Error ? error.message : String(error));
   }
