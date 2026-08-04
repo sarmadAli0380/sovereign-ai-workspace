@@ -14,11 +14,21 @@
   "codex-default": {
     "provider": "openai-codex",
     "modelId": "gpt-5.6-luna",
-    "maxTokens": 4096
+    "maxTokens": 4096,
+    "transport": "sse",
+    "maxTokensHonored": false
   },
   "codex-alt": {
     "provider": "openai-codex",
     "modelId": "gpt-5.5",
-    "maxTokens": 4096
+    "maxTokens": 4096,
+    "transport": "sse",
+    "maxTokensHonored": false
+  },
+  "local-qwen": {
+    "provider": "ollama",
+    "modelId": "qwen3:4b",
+    "maxTokens": 2048,
+    "contextWindow": 8192
   }
 }

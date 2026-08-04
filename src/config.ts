@@ -17,6 +17,7 @@
 
 import { readFileSync } from "node:fs";
 import { fromRepoRoot } from "./paths.ts";
+import type { Transport } from "@earendil-works/pi-ai";
 import { HarnessError } from "./types.ts";
 
 export interface ConfigEntry {
@@ -33,10 +34,9 @@ export interface ConfigEntry {
    * response.
    *
    * Kept required because it IS honoured by every other provider, and
-   * dropping it would break them. But note the tension with this file's own
-   * rule that a field nothing reads should be rejected rather than
-   * accepted — for codex, this is that field. `loadModel()` warns rather
-   * than silently accepting it. Do not rely on it to bound spend on codex.
+   * dropping it would break them. Declare `maxTokensHonored: false` on an
+   * entry whose provider drops it, so the harness can warn instead of
+   * letting a caller believe their spend is bounded.
    */
   maxTokens: number;
   /**
@@ -53,9 +53,51 @@ export interface ConfigEntry {
    * reliable signal for "omit this". An absent field is unambiguous.
    */
   temperature?: number;
+
+  /**
+   * Overrides the model's advertised `contextWindow`.
+   *
+   * Needed because a provider can advertise a window it does not serve.
+   * Measured: `qwen3:4b` reports 262144 and `ollama show` agrees, but
+   * `/api/ps` reports `context served: 4096` — a 64x overstatement. Trusting
+   * the advertised figure would let `ConversationManager` fill a ~245k
+   * budget while the server silently discarded everything past 4096.
+   *
+   * Deliberately per-entry rather than per-provider: two deployments of the
+   * same provider can serve different windows (`OLLAMA_CONTEXT_LENGTH` is a
+   * server setting). This is a fact about *your* deployment, not about the
+   * software.
+   */
+  contextWindow?: number;
+
+  /**
+   * Transport preference for providers that support more than one.
+   *
+   * Per-entry rather than global because it varies by provider: `openai-codex`
+   * needs `sse` where WebSocket is blocked, while a local server has no
+   * such constraint. A single global switch would apply one provider's
+   * workaround to every other provider.
+   */
+  transport?: Transport;
+
+  /**
+   * Set `false` when the provider silently drops `maxTokens`.
+   *
+   * Default (unset) means honoured. Declared per entry rather than inferred
+   * from a hardcoded provider list, so a new provider with the same quirk
+   * needs a config edit, not a code change.
+   *
+   * Known case: `openai-codex` — pi-ai's `openai-codex-responses` API never
+   * puts any max-tokens field on the wire. Measured: `maxTokens: 40`
+   * returned 736 tokens.
+   */
+  maxTokensHonored?: boolean;
 }
 
 export type HarnessConfig = Record<string, ConfigEntry>;
+
+/** Mirrors pi-ai's `Transport` union. */
+const VALID_TRANSPORTS = new Set(["sse", "websocket", "websocket-cached", "auto"]);
 
 /**
  * Default config location — anchored to the repo root, not the cwd, so the
@@ -88,6 +130,23 @@ function assertEntry(key: string, value: unknown): ConfigEntry {
     problems.push("`temperature` must be a number when present");
   }
 
+  if (
+    entry["contextWindow"] !== undefined &&
+    (typeof entry["contextWindow"] !== "number" ||
+      !Number.isFinite(entry["contextWindow"]) ||
+      entry["contextWindow"] <= 0)
+  ) {
+    problems.push("`contextWindow` must be a positive number when present");
+  }
+  if (entry["transport"] !== undefined && !VALID_TRANSPORTS.has(String(entry["transport"]))) {
+    problems.push(
+      `\`transport\` must be one of: ${[...VALID_TRANSPORTS].join(", ")} (got ${JSON.stringify(entry["transport"])})`,
+    );
+  }
+  if (entry["maxTokensHonored"] !== undefined && typeof entry["maxTokensHonored"] !== "boolean") {
+    problems.push("`maxTokensHonored` must be a boolean when present");
+  }
+
   // Catch the deferred/rejected fields explicitly rather than ignoring
   // them. Silently accepting a `fallbackConfigKey` that nothing reads is
   // worse than saying it isn't wired up yet.
@@ -103,7 +162,16 @@ function assertEntry(key: string, value: unknown): ConfigEntry {
   // Reject any other unrecognised key too. Without this, the deferred-field
   // check above is trivially defeated by a typo: `temperture: 0.9` was
   // silently dropped, so the config looked applied and wasn't.
-  const known = new Set(["provider", "modelId", "maxTokens", "temperature", ...deferredFields]);
+  const known = new Set([
+    "provider",
+    "modelId",
+    "maxTokens",
+    "temperature",
+    "contextWindow",
+    "transport",
+    "maxTokensHonored",
+    ...deferredFields,
+  ]);
   for (const key of Object.keys(entry)) {
     if (!known.has(key)) {
       problems.push(`unknown field \`${key}\` — nothing reads it (typo?)`);
@@ -123,6 +191,13 @@ function assertEntry(key: string, value: unknown): ConfigEntry {
     maxTokens: entry["maxTokens"] as number,
     ...(entry["temperature"] !== undefined
       ? { temperature: entry["temperature"] as number }
+      : {}),
+    ...(entry["contextWindow"] !== undefined
+      ? { contextWindow: entry["contextWindow"] as number }
+      : {}),
+    ...(entry["transport"] !== undefined ? { transport: entry["transport"] as Transport } : {}),
+    ...(entry["maxTokensHonored"] !== undefined
+      ? { maxTokensHonored: entry["maxTokensHonored"] as boolean }
       : {}),
   };
 }

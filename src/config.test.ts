@@ -28,7 +28,7 @@ test("the repo's own model.config.json is valid", () => {
     assert.ok(keys.includes("provider") && keys.includes("modelId") && keys.includes("maxTokens"));
     for (const key of keys) {
       assert.ok(
-        ["provider", "modelId", "maxTokens", "temperature"].includes(key),
+        ["provider", "modelId", "maxTokens", "temperature", "contextWindow", "transport", "maxTokensHonored"].includes(key),
         `unexpected config field: ${key}`,
       );
     }

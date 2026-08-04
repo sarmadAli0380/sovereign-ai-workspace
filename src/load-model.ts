@@ -15,25 +15,35 @@
  * recorded in findings-log.md.
  */
 
+import { readFileSync } from "node:fs";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import type { Api, Model, Models, MutableModels, Transport } from "@earendil-works/pi-ai";
 import type { ConfigEntry, HarnessConfig } from "./config.ts";
 import { FileCredentialStore } from "./credential-store.ts";
+import {
+  openAICompatibleProvider,
+  type OpenAICompatibleProviderSpec,
+} from "./openai-compatible.ts";
+import { fromRepoRoot } from "./paths.ts";
 import { HarnessError } from "./types.ts";
+
+/** Self-hosted provider declarations. Absent file = no local providers. */
+const LOCAL_PROVIDERS_PATH: string =
+  process.env["HARNESS_LOCAL_PROVIDERS"]?.trim() || fromRepoRoot("local-providers.json");
 
 /** Mirrors pi-ai's `Transport` union — a typo here silently changes behaviour. */
 const VALID_TRANSPORTS = new Set(["sse", "websocket", "websocket-cached", "auto"]);
-
-/**
- * Providers whose pi-ai API implementation drops `maxTokens` entirely.
- * Verified by grepping the api module for any max-tokens field name.
- */
-const PROVIDERS_IGNORING_MAX_TOKENS = new Set(["openai-codex"]);
 
 const warnedConfigKeys = new Set<string>();
 
 /**
  * Warns once per configKey that `maxTokens` will not be applied.
+ *
+ * Driven by the entry's declared `maxTokensHonored`, NOT by a hardcoded
+ * provider list. An earlier version kept `new Set(["openai-codex"])` here,
+ * which put a provider name into harness control flow — precisely what a
+ * model-agnostic harness must not do, since every new provider with the
+ * same quirk would mean editing this file.
  *
  * A silent no-op on a spend-limiting field is the failure mode this project
  * already rejected for `fallbackConfigKey` and friends; the difference is
@@ -42,13 +52,13 @@ const warnedConfigKeys = new Set<string>();
  * response is bounded when it isn't.
  */
 function warnIfMaxTokensIgnored(entry: ConfigEntry, configKey: string): void {
-  if (!PROVIDERS_IGNORING_MAX_TOKENS.has(entry.provider)) return;
+  if (entry.maxTokensHonored !== false) return;
   if (warnedConfigKeys.has(configKey)) return;
   warnedConfigKeys.add(configKey);
 
   console.warn(
     `[harness] configKey "${configKey}": provider "${entry.provider}" ignores maxTokens ` +
-      `(${entry.maxTokens}) — pi-ai's ${entry.provider} API never sends it. Responses are NOT bounded.`,
+      `(${entry.maxTokens}) per its config declaration. Responses are NOT bounded.`,
   );
 }
 
@@ -56,6 +66,16 @@ export interface ResolvedModel {
   model: Model<Api>;
   entry: ConfigEntry;
   configKey: string;
+  /**
+   * The context window callers should actually budget against: the entry's
+   * override when present, else the model's advertised value.
+   *
+   * Exists because a provider can advertise a window it does not serve
+   * (measured: `qwen3:4b` advertises 262144, Ollama serves 4096). Callers
+   * should use this rather than `model.contextWindow`, so the override
+   * cannot be bypassed by reading the model directly.
+   */
+  contextWindow: number;
 }
 
 /**
@@ -65,30 +85,33 @@ export interface ResolvedModel {
  * passing `temperature: undefined` is not the same as not passing it, and
  * `openai-codex` rejects the parameter's mere presence. See `ConfigEntry`.
  *
- * `transport` is deliberately NOT part of the config schema: it's a
- * property of the network you're on, not of the model you're routing to,
- * so putting it in `model.config.json` would tie a per-environment fact to
- * a per-model record. It comes from `HARNESS_TRANSPORT` instead, and is
- * unset by default so pi-ai's own "auto" applies.
+ * `transport` resolves per entry first, then falls back to
+ * `HARNESS_TRANSPORT`. The env var was originally the only source, which
+ * was wrong granularity: it applied one provider's workaround to every
+ * provider in the config. A provider needing `sse` should not force it on a
+ * local server that doesn't. The env var is kept as a global escape hatch
+ * for the case where the whole network blocks a transport.
  *
  * Why it's needed at all: `openai-codex` defaults to `auto`, which tries
  * WebSocket first and only falls back to SSE after a 15s connect timeout.
  * On a network where WebSocket to chatgpt.com is blocked, every call eats
- * that timeout and then reports `fetch failed`. `HARNESS_TRANSPORT=sse`
- * skips straight to the working path.
+ * that timeout and then reports `fetch failed`.
  */
 export function callOptions(entry: ConfigEntry): {
   maxTokens: number;
   temperature?: number;
   transport?: Transport;
 } {
-  const transport = process.env["HARNESS_TRANSPORT"]?.trim();
-  if (transport && !VALID_TRANSPORTS.has(transport)) {
+  const envTransport = process.env["HARNESS_TRANSPORT"]?.trim();
+  if (envTransport && !VALID_TRANSPORTS.has(envTransport)) {
     throw new HarnessError(
       "invalidContext",
-      `HARNESS_TRANSPORT="${transport}" is not a valid transport. Expected one of: ${[...VALID_TRANSPORTS].join(", ")}.`,
+      `HARNESS_TRANSPORT="${envTransport}" is not a valid transport. Expected one of: ${[...VALID_TRANSPORTS].join(", ")}.`,
     );
   }
+
+  // Per-entry wins; the env var is the global fallback.
+  const transport = entry.transport ?? envTransport;
 
   return {
     maxTokens: entry.maxTokens,
@@ -111,8 +134,41 @@ let defaultModels: MutableModels | undefined;
  * in-memory — without it, an OAuth login would not survive the process.
  */
 export function getModels(): MutableModels {
-  defaultModels ??= builtinModels({ credentials: new FileCredentialStore() });
+  if (!defaultModels) {
+    defaultModels = builtinModels({ credentials: new FileCredentialStore() });
+    registerLocalProviders(defaultModels);
+  }
   return defaultModels;
+}
+
+/**
+ * Registers every self-hosted provider declared in `local-providers.json`.
+ *
+ * Data-driven on purpose: adding vLLM, llama.cpp or a second Ollama box is a
+ * JSON edit, with no branch anywhere in the harness that names a provider.
+ * A missing file is normal — it just means no local providers.
+ */
+function registerLocalProviders(models: MutableModels): void {
+  let raw: string;
+  try {
+    raw = readFileSync(LOCAL_PROVIDERS_PATH, "utf8");
+  } catch {
+    return;
+  }
+
+  let specs: Record<string, Omit<OpenAICompatibleProviderSpec, "id">>;
+  try {
+    specs = JSON.parse(raw);
+  } catch (error) {
+    throw new HarnessError(
+      "invalidContext",
+      `Could not parse ${LOCAL_PROVIDERS_PATH}: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+
+  for (const [id, spec] of Object.entries(specs)) {
+    models.setProvider(openAICompatibleProvider({ id, ...spec }));
+  }
 }
 
 /**
@@ -145,5 +201,10 @@ export function loadModel(
 
   warnIfMaxTokensIgnored(entry, configKey);
 
-  return { model, entry, configKey };
+  return {
+    model,
+    entry,
+    configKey,
+    contextWindow: entry.contextWindow ?? model.contextWindow,
+  };
 }

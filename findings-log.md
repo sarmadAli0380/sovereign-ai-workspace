@@ -920,6 +920,96 @@ Negative results, all against `openai-codex`:
 
 ---
 
+## Phase 2 — local inference, and a model-agnosticism audit, 2026-08-04
+
+### The harness had drifted toward provider-specific special-casing
+
+Prompted by the user asking to check the harness was still model-agnostic.
+An audit found one genuine violation, and my in-progress 2.5 design was
+about to add three more:
+
+- `load-model.ts:31` held `PROVIDERS_IGNORING_MAX_TOKENS = new Set(["openai-codex"])`
+  — a provider name in harness *control flow*, meaning every new provider
+  with the same quirk would require editing the harness.
+- `HARNESS_TRANSPORT` was global, so one provider's workaround applied to
+  every provider in the config.
+- The 2.5 draft hardcoded Ollama's `maxTokensField` and `contextWindow`.
+
+**Principle applied: provider quirks are data, not code.** All of it moved
+into the config entry as optional declarations (`transport`,
+`maxTokensHonored`, `contextWindow`), and self-hosted providers are now
+declared in `local-providers.json` and registered generically by
+`openai-compatible.ts`. Adding vLLM, llama.cpp or LM Studio is a JSON edit.
+
+Post-refactor audit: **zero provider names remain in harness control flow.**
+
+### Two silent-failure bugs caught by the verified design pass, before any code
+
+Both are the same class as codex's `maxTokens` — accepted and ignored.
+
+1. **`maxTokensField`.** pi-ai's `detectCompat()` branches on hostname
+   substrings and has no case for localhost, so a self-hosted server gets
+   the hosted-OpenAI default `max_completion_tokens`. Measured against
+   Ollama at a limit of 16: `max_tokens` -> 16 tokens, `finish=length`;
+   `max_completion_tokens` -> 156 tokens, `finish=stop`. Without the
+   override `maxTokens` is a no-op.
+2. **`contextWindow`.** `qwen3:4b` advertises 262144 and `ollama show`
+   agrees, but `/api/ps` reports `context served: 4096` — a 64x
+   overstatement. Trusting it would have `ConversationManager` fill a ~245k
+   budget while the server silently discarded everything past 4096: a model
+   that "forgets" while the harness insists nothing was dropped.
+
+**The generalisable lesson:** I probed six compat flags and every one
+returned `ok`, including `max_completion_tokens`, which does nothing.
+*Tolerance is not support.* Testing whether a parameter is accepted proves
+nothing; only testing whether it is honoured does. That is now the first
+check for any new provider.
+
+Worth recording a failed prediction too: I expected several compat flags to
+need overrides (`store`, `developer` role, `reasoning_effort`). Ollama
+tolerated all of them. Only `maxTokensField` mattered.
+
+### A hidden large-context assumption in 1.5
+
+Wiring the local model surfaced a real design flaw the cloud providers had
+concealed: `ConversationManager` refused to construct at all.
+
+```
+Error: contextWindow (8192) must exceed reserveTokens (16384)
+```
+
+`DEFAULT_RESERVE_TOKENS = 16384` came from pi-coding-agent, which targets
+200k-context hosted models — there it is ~6% of the window. On an
+8192-token local model it exceeds the entire context. Every model tested
+until now had a large window, so the assumption was invisible.
+
+Fixed generically: the reserve is now `min(requested, contextWindow * 0.25)`.
+Large windows are unaffected (272k still reserves 16384); small ones scale
+down. This is exactly the class of bug the agnosticism audit was looking
+for, found by running rather than reading.
+
+### Phase 1's last gap is closed
+
+```
+providers: openai-codex vs ollama — genuine provider swap.
+✓ Both responses carry every required AssistantMessage field with matching types.
+✓ Swap performed with zero code changes — only the configKey differed.
+```
+
+Cloud API to self-hosted model, across different API surfaces
+(`openai-codex-responses` vs `openai-completions`), same code. That is the
+roadmap's Phase 1 project goal, and it needed Phase 2's local model to
+demonstrate.
+
+Full local round trip also verified: `stopReason: toolUse` with a
+`thinking` block, `get_weather` dispatched, `stop` with the answer used.
+`qwen3:4b` tool calling works cleanly — the Qwen3.5 renderer bug (2.1) does
+not affect it.
+
+101 tests, typecheck clean.
+
+---
+
 ## Conceptual framework
 
 Applied a structural-vs-dynamic lens across the roadmap (full breakdown in

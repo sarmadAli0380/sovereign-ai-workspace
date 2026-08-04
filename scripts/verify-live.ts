@@ -28,12 +28,12 @@ const configKey = process.argv[2] ?? "codex-default";
 // --- 1.4: config → model, a single lookup with no caller-side branching
 
 const config = loadConfig();
-const { model, entry } = loadModel(configKey, config);
+const { model, entry, contextWindow } = loadModel(configKey, config);
 
 console.log(`configKey:     ${configKey}`);
 console.log(`provider:      ${entry.provider}`);
 console.log(`model:         ${model.id}  (api: ${model.api})`);
-console.log(`contextWindow: ${model.contextWindow}`);
+console.log(`contextWindow: ${contextWindow}${entry.contextWindow ? ` (config override; model advertises ${model.contextWindow})` : ""}`);
 
 // --- auth pre-flight
 
@@ -87,7 +87,7 @@ registry.register({
 const conversation = new ConversationManager({
   systemPrompt: "You are a concise assistant. Use tools when they are relevant.",
   tools: registry.getToolDefinitions(),
-  contextWindow: model.contextWindow,
+  contextWindow,
 });
 
 conversation.append({

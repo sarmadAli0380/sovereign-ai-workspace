@@ -68,11 +68,21 @@ test("budget is contextWindow minus reserveTokens", () => {
   assert.equal(cm.getBudgetTokens(), 100_000 - DEFAULT_RESERVE_TOKENS);
 });
 
-test("rejects a contextWindow smaller than the reserve", () => {
-  assert.throws(
-    () => new ConversationManager({ contextWindow: 1_000 }),
-    /must exceed reserveTokens/,
-  );
+test("scales the reserve down for a small context window instead of refusing", () => {
+  // A 4B local model serves 8192; the 16384 default reserve exceeds the
+  // whole window. Scaling keeps the harness usable across model classes.
+  const cm = new ConversationManager({ contextWindow: 8_192 });
+  assert.equal(cm.getBudgetTokens(), 8_192 - 2_048, "reserve should cap at 25% of the window");
+});
+
+test("leaves the reserve untouched on a large context window", () => {
+  const cm = new ConversationManager({ contextWindow: 272_000 });
+  assert.equal(cm.getBudgetTokens(), 272_000 - DEFAULT_RESERVE_TOKENS);
+});
+
+test("caps an explicitly requested reserve too", () => {
+  const cm = new ConversationManager({ contextWindow: 4_000, reserveTokens: 3_900 });
+  assert.equal(cm.getBudgetTokens(), 4_000 - 1_000);
 });
 
 test("truncation runs on every append, not lazily before a call", () => {
@@ -94,7 +104,7 @@ test("truncation runs on every append, not lazily before a call", () => {
 
 test("the Context stays within budget as messages accumulate", () => {
   const cm = new ConversationManager({
-    contextWindow: DEFAULT_RESERVE_TOKENS + 200,
+    contextWindow: 2_000,
     maxToolResultChars: 500,
   });
 
@@ -158,7 +168,7 @@ test("append() does not cap non-toolResult messages", () => {
 
 test("capping happens before truncation, so a huge tool result does not evict history", () => {
   const cm = new ConversationManager({
-    contextWindow: DEFAULT_RESERVE_TOKENS + 400,
+    contextWindow: 4_000,
     maxToolResultChars: 200,
   });
 

@@ -35,11 +35,11 @@ const models = getModels();
 
 /** Identical for both keys — the only thing that varies is `configKey`. */
 async function run(configKey: string): Promise<HarnessResult> {
-  const { model, entry } = loadModel(configKey, config);
+  const { model, entry, contextWindow } = loadModel(configKey, config);
 
   const conversation = new ConversationManager({
     systemPrompt: "Answer in one sentence.",
-    contextWindow: model.contextWindow,
+    contextWindow,
   });
   conversation.append({ role: "user", content: PROMPT, timestamp: Date.now() });
 

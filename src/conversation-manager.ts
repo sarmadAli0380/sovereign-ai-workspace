@@ -35,6 +35,40 @@ import { dropOldestStrategy, estimateContextTokens, type TruncationStrategy } fr
 export const DEFAULT_RESERVE_TOKENS = 16_384;
 export const DEFAULT_MAX_TOOL_RESULT_CHARS = 16_000;
 
+/**
+ * Fraction of the context window the reserve may occupy when the absolute
+ * default would be too large.
+ *
+ * `DEFAULT_RESERVE_TOKENS` came from pi-coding-agent, which targets
+ * 200k-context hosted models — there, 16,384 is ~6% of the window. Applied
+ * to a small self-hosted model it is nonsense: an 8,192-token local model
+ * has a reserve twice its entire context, and `ConversationManager` refused
+ * to construct at all.
+ *
+ * That was a hidden assumption that every model has a large window, which
+ * is precisely what a model-agnostic harness must not assume. The reserve is
+ * now the *smaller* of the absolute default and this fraction, so it scales
+ * down for small models while leaving large ones exactly as they were.
+ *
+ * TUNABLE: 25% is a judgement call, not a measurement. It leaves 75% of a
+ * small window for actual history, which is the right side to err on when
+ * the alternative is not working at all.
+ */
+export const MAX_RESERVE_FRACTION = 0.25;
+
+/**
+ * The reserve actually applied for a given window.
+ *
+ * Exported because callers sizing a conversation need to predict the budget
+ * without constructing one.
+ */
+export function resolveReserveTokens(
+  contextWindow: number,
+  requested: number = DEFAULT_RESERVE_TOKENS,
+): number {
+  return Math.min(requested, Math.floor(contextWindow * MAX_RESERVE_FRACTION));
+}
+
 export interface ConversationManagerOptions {
   systemPrompt?: string;
   tools?: Context["tools"];
@@ -109,12 +143,17 @@ export class ConversationManager {
   private readonly strategy: TruncationStrategy;
 
   constructor(options: ConversationManagerOptions) {
-    const reserve = options.reserveTokens ?? DEFAULT_RESERVE_TOKENS;
+    // Scaled down for small windows — an explicit `reserveTokens` is still
+    // capped, since the same arithmetic breaks whoever supplied it.
+    const reserve = resolveReserveTokens(
+      options.contextWindow,
+      options.reserveTokens ?? DEFAULT_RESERVE_TOKENS,
+    );
     this.budget = options.contextWindow - reserve;
 
     if (this.budget <= 0) {
       throw new Error(
-        `contextWindow (${options.contextWindow}) must exceed reserveTokens (${reserve}) — no budget left for messages.`,
+        `contextWindow (${options.contextWindow}) is too small to hold any messages after a reserve of ${reserve}.`,
       );
     }
 

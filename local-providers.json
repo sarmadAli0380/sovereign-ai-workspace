@@ -1,0 +1,15 @@
+{
+  "ollama": {
+    "baseUrl": "http://localhost:11434/v1",
+    "name": "Ollama (local)",
+    "models": [
+      {
+        "id": "qwen3:4b",
+        "name": "Qwen3 4B (local)",
+        "contextWindow": 8192,
+        "maxTokens": 2048,
+        "reasoning": true
+      }
+    ]
+  }
+}
