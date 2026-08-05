@@ -8,6 +8,10 @@ Read `CLAUDE.md` first, then this, then `findings-log.md`. The findings log
 is long but it is the "why" behind every decision, including several that
 were reversed.
 
+Read `lessons.md` before writing any code. It is short, and it is the list
+of mistakes that have actually shipped here — with the check that catches
+each one.
+
 ---
 
 ## Where things stand
@@ -28,7 +32,7 @@ code changes — different API surfaces, same code, only the configKey
 differs. That was Phase 1's project goal and it needed Phase 2's local
 model to demonstrate.
 
-142 tests, `tsc --noEmit` clean.
+173 tests, `tsc --noEmit` clean.
 
 ---
 
@@ -37,7 +41,7 @@ model to demonstrate.
 ```bash
 cd ~/Desktop/sovereign-ai-roadmap
 
-npm test                                            # 142 tests
+npm test                                            # 173 tests
 npx tsc --noEmit                                    # typecheck
 
 node scripts/verify-live.ts codex-default           # cloud, full tool round trip
@@ -74,7 +78,7 @@ pi-ai's ontology unchanged and adds `HarnessResult`. `config.ts` +
 
 ## Hard-won facts — do not re-derive these
 
-### The ADRs' claims about pi-ai have been wrong four times
+### The ADRs' claims about pi-ai have been wrong five times
 
 Every one was "pi-ai does X" when it didn't, found at implementation cost:
 
@@ -83,6 +87,9 @@ Every one was "pi-ai does X" when it didn't, found at implementation cost:
 3. pi-ai **never calls** `validateToolCall` — the harness must, and now does
 4. `detectCompat()` has **no localhost case**, so self-hosted servers get
    hosted-OpenAI defaults
+5. 1.8 claimed codex's replayed reasoning was invisible to the harness. It
+   is in `ThinkingContent.thinkingSignature`, a documented field — 1146
+   chars of it on one turn — and `estimateTokens` simply wasn't counting it
 
 **Treat any remaining "pi-ai already handles X" claim as unverified until
 executed.** A grep would have caught most of these.
@@ -90,11 +97,16 @@ executed.** A grep would have caught most of these.
 ### A billed token is not a resent token
 
 The 2026-08-05 sibling of the rule below. `usage.output` counts reasoning
-tokens on both providers — but codex replays reasoning the harness cannot
-see, and qwen discards 3106 characters of thinking that the harness dutifully
-counts. The same message record is an underestimate on one provider and a
-9× overestimate on the other. **Accounting for generation and accounting for
-context are different questions**, and only the second sizes a budget.
+tokens on both providers — but codex replays its reasoning (as an opaque
+`thinkingSignature`) while qwen discards 3106 characters of thinking the
+harness had dutifully counted. The same message record was an underestimate
+on one provider and a 9× overestimate on the other. **Accounting for
+generation and accounting for context are different questions**, and only
+the second sizes a budget.
+
+Signatures are counted since the QA pass, so the codex half is now measured
+rather than missing — but the asymmetry itself is the durable point: what a
+provider *replays* is not derivable from what it *billed*.
 
 ### Tolerance is not support
 
@@ -152,11 +164,11 @@ context (148,480 B/token on qwen3:4b) right up until it isn't.
 
 ### 1. Smaller open items
 
-- **1.8's remaining item:** the anchor adds `input + cacheRead + cacheWrite`,
-  but every measurement so far reported both cache fields as 0, so that
-  arithmetic has never been exercised. Needs a provider that actually
-  caches. Understating the context is the dangerous direction, which is why
-  they are included rather than deferred.
+- **1.8's remaining item:** the anchor adds `input + cacheRead + cacheWrite`.
+  The gate in front of it used to test `input` alone and threw the
+  measurement away on a fully cached request — fixed — but no measurement
+  here has ever reported a non-zero cache field, so the sum itself is still
+  unexercised against a genuinely caching provider.
 - Reasoning **replay** is shape-dependent and uncharacterised: qwen dropped
   3106 chars of thinking on a plain turn and appears to replay it across a
   tool-call continuation. The `prev.in` anchor is deliberately built not to

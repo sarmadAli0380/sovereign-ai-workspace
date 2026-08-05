@@ -99,6 +99,20 @@ but clearly flag what's implemented-but-unverified rather than silently
 skipping the proof step or claiming something works when it hasn't been
 run.
 
+## Read `lessons.md` before writing code
+
+`lessons.md` records the recurring *authorial* failure modes on this
+project — guards written against an earlier draft of the value, unions
+whose sibling fields get scored at zero, `NaN` sailing past `<= 0`,
+verification harnesses that quietly test nothing, and test fixtures blamed
+on the implementation. Each entry has the concrete check that catches it,
+and there is a pre-flight checklist at the bottom.
+
+It is deliberately separate from `findings-log.md`: that one holds what was
+learned about the world (pi-ai, providers, hardware), this one holds how the
+code got written wrong. Add to it when you catch yourself repeating a
+mistake — the entries earn their place by having actually shipped.
+
 ## Process notes
 
 - Log real findings (what you learn while implementing, any decisions you
