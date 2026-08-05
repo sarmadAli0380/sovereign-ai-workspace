@@ -34,6 +34,8 @@ below is new work.
 
 *Turns a model call into something that can do work.*
 
+**Designed: `phaseA/adrs/A1-agent-runtime.md`.** Not yet implemented.
+
 - An agent loop over `step()` — turn limits, cancellation, streaming out.
 - A built-in tool suite: file read/write, search, shell, HTTP. Each one a
   security boundary in a client deployment, so scoping is part of the

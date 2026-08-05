@@ -1707,6 +1707,76 @@ Recorded in `ADR-003-sovereign-workspace-product.md` and
 
 ---
 
+## Designing Phase A: what pi-ai already does, 2026-08-05
+
+Checked `pi-ai` before designing the agent runtime rather than after, per
+`lessons.md` #2 and the standing rule that this project's ADRs have been
+wrong about `pi-ai` five times. Four findings, each of which changed the
+design.
+
+**`complete()` is literally `stream().result()`** (`dist/models.js:270`).
+That collapses the biggest structural question in Phase A. A streaming path
+and a non-streaming path would have been two routes through identical
+provider behaviour — and both adversarial QA passes found defects
+concentrated exactly where two paths were meant to behave the same. `step()`
+moves to `stream()` with an optional event sink; there is no `streamStep()`
+twin.
+
+**`AssistantMessageEventStream` is async-iterable *and* has `.result()`**
+(`utils/event-stream.d.ts`). One call gives streaming events for the UI and
+the final `AssistantMessage` for persistence. No buffering layer needed.
+
+**The event protocol is already rich** (`types.d.ts:365`) — separate
+start/delta/end triples for text, thinking and tool calls, every event
+carrying `partial: AssistantMessage`. Our runtime protocol wraps it with
+run/turn/tool events rather than replacing it.
+
+**There is no MCP client.** The only `mcp` in the whole package is an OAuth
+*scope string* — `user:mcp_servers` in Anthropic's auth flow. Worth
+recording precisely because a careless `grep -l` reports four matching
+files and reads like support. That is the shape of the mistake in
+`lessons.md` #2, caught this time by looking at what actually matched.
+
+### The design decision I expect to be glad about
+
+Approval **suspends** the run rather than blocking it: `run()` ends with
+`reason: "needsApproval"` and the pending calls visible, and the caller
+resumes with decisions. Stateless per HTTP request, survives a dropped
+connection, and makes the approval a persisted record rather than an
+in-memory promise.
+
+It costs almost nothing because `step()` already has that shape — when
+tools are requested and no registry can run them, it returns `done: true`
+with `toolCalls` populated rather than swallowing them. Approval-required
+is the same case with a different reason. A design property built for one
+reason turning out to be exactly what a later requirement needs is rare
+enough to note.
+
+### The security principle Phase A turns on
+
+**The model proposes, the policy disposes** — the model may request any
+tool; whether it runs is decided by code and configuration the model cannot
+influence.
+
+Its corollary is the part that is easy to get wrong: **tool results are
+untrusted input.** A document the agent reads, a page it fetches, or an MCP
+server's own tool *description* can carry text aimed at the model. So
+nothing in a tool result may widen permissions or approve an action.
+
+That last case is the sharp one. MCP servers supply their own tool names and
+descriptions, which go straight into the prompt — untrusted text in a
+privileged position. Flagged `[UNVERIFIED]` in A.1 and needs design before
+MCP ships rather than after.
+
+### Something the QA pass found that Phase A must fix
+
+`dispatchToolCall` has **no timeout**. A handler that never resolves wedges
+`Promise.allSettled` and the turn forever. Harmless while every tool is a
+test stub returning a fixed string; not harmless once tools do shell and
+network I/O on a client's server.
+
+---
+
 ## Conceptual framework
 
 Applied a structural-vs-dynamic lens across the roadmap (full breakdown in
