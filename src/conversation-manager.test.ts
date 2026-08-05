@@ -469,3 +469,122 @@ test("PROPERTY: anchored error stays bounded by one turn, unanchored error compo
   // content per turn, so a bound of 2000 proves it is not accumulating.
   assert.ok(worstAnchoredError < 2_000, `anchored error grew to ${worstAnchoredError}`);
 });
+
+// --- QA findings 1, 2, 4
+
+test("a non-finite contextWindow is rejected instead of disabling truncation", () => {
+  for (const window of [NaN, Infinity, -Infinity]) {
+    assert.throws(
+      () => new ConversationManager({ contextWindow: window }),
+      /contextWindow must be a finite number/,
+      `contextWindow ${window} must be rejected`,
+    );
+  }
+  assert.throws(
+    () => new ConversationManager({ contextWindow: 8_192, reserveTokens: NaN }),
+    /reserveTokens must be a finite number/,
+  );
+});
+
+test("REGRESSION: a NaN window does not silently accept unbounded history", () => {
+  // Reachable from one typo'd field in local-providers.json: an undefined
+  // contextWindow made budget NaN, and `NaN <= 0` is false, so every guard
+  // passed and no message ever exceeded the budget.
+  assert.throws(() => new ConversationManager({ contextWindow: NaN }), /finite/);
+});
+
+test("REGRESSION: append() leaves the Context within budget even when the anchor is dropped", () => {
+  // The anchor widens the truncation budget. If that pass then cuts into the
+  // anchored prefix, the widening is no longer justified and the kept set
+  // must be re-checked — the old code deferred that to the next append.
+  const cm = new ConversationManager({ contextWindow: 4_000 });
+  cm.append(user("m".repeat(9_000))); // ~3004, immediately over budget alone
+  cm.append(assistantWithUsage("ok", 10)); // provider says the request was tiny
+  cm.append(user("u1".repeat(1_500)));
+  cm.append(user("u2".repeat(3_000)));
+
+  assert.ok(
+    cm.getEstimatedTokens() <= cm.getBudgetTokens(),
+    `estimate ${cm.getEstimatedTokens()} must not exceed budget ${cm.getBudgetTokens()}`,
+  );
+});
+
+test("PROPERTY: the budget invariant holds after every append, anchored or not", () => {
+  // Randomised: interleave sized messages with anchors whose measured value
+  // is deliberately unrelated to the heuristic, which is what produces the
+  // widened budget in the first place.
+  let seed = 7;
+  const rand = (n: number) => {
+    seed = (seed * 1103515245 + 12345) % 2147483648;
+    return seed % n;
+  };
+
+  for (let trial = 0; trial < 200; trial += 1) {
+    const cm = new ConversationManager({ contextWindow: 2_000 + rand(6_000) });
+    for (let i = 0; i < 12; i += 1) {
+      if (rand(3) === 0) {
+        cm.append(assistantWithUsage("r".repeat(rand(400)), rand(3_000)));
+      } else {
+        cm.append(user("x".repeat(rand(4_000))));
+      }
+      const { tokens } = cm.getBudgetUsage();
+      assert.ok(
+        tokens <= cm.getBudgetTokens() || cm.getHistory().length === 1,
+        `trial ${trial} step ${i}: ${tokens} > ${cm.getBudgetTokens()} with ${cm.getHistory().length} messages`,
+      );
+    }
+  }
+});
+
+test("REGRESSION: a fully cached request still anchors", () => {
+  // pi-ai reports `input = max(0, prompt - cacheRead - cacheWrite)`, so a
+  // fully cached prefix arrives as input 0 with the real size in cacheRead.
+  // Gating on `input` threw that measurement away exactly when caching worked.
+  const cached: AssistantMessage = {
+    role: "assistant",
+    content: [{ type: "text", text: "hi" }],
+    api: "faux",
+    provider: "faux",
+    model: "m",
+    usage: { ...usage, input: 0, cacheRead: 8_000, totalTokens: 8_000 },
+    stopReason: "stop",
+    timestamp: 1,
+  };
+
+  const cm = new ConversationManager({ contextWindow: 200_000 });
+  cm.append(user("hello"));
+  cm.append(cached);
+
+  const budget = cm.getBudgetUsage();
+  assert.equal(budget.source, "anchored");
+  assert.ok(budget.tokens > 8_000, `got ${budget.tokens}, expected the 8000 cached tokens counted`);
+});
+
+test("a genuinely empty usage still reports no measurement", () => {
+  const cm = new ConversationManager({ contextWindow: 200_000 });
+  cm.append(user("hello"));
+  cm.append(assistantWithUsage("hi", 0)); // all usage fields zero
+  assert.equal(cm.getBudgetUsage().source, "estimated");
+});
+
+// --- QA finding 10: no live internals handed to callers
+
+test("REGRESSION: getHistory() returns a snapshot, not a live array", () => {
+  const cm = new ConversationManager({ contextWindow: 200_000 });
+  cm.append(user("a"));
+  const held = cm.getHistory();
+  cm.append(user("b"));
+  assert.equal(held.length, 1, "an earlier snapshot must not grow underneath its holder");
+  assert.equal(cm.getHistory().length, 2);
+});
+
+test("REGRESSION: mutating the caller's tools array cannot desync the overhead", () => {
+  const tools = [{ name: "a", description: "d", parameters: Type.Object({}) }];
+  const cm = new ConversationManager({ contextWindow: 200_000, tools });
+  const overheadBefore = cm.getOverheadTokens();
+
+  tools.push({ name: "b", description: "d".repeat(500), parameters: Type.Object({}) });
+
+  assert.equal(cm.getContext().tools?.length, 1, "the manager must not see the late addition");
+  assert.equal(cm.getOverheadTokens(), overheadBefore);
+});

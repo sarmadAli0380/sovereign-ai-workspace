@@ -20,10 +20,7 @@ import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import type { Api, Model, Models, MutableModels, Transport } from "@earendil-works/pi-ai";
 import type { ConfigEntry, HarnessConfig } from "./config.ts";
 import { FileCredentialStore } from "./credential-store.ts";
-import {
-  openAICompatibleProvider,
-  type OpenAICompatibleProviderSpec,
-} from "./openai-compatible.ts";
+import { openAICompatibleProvider, parseLocalProviders } from "./openai-compatible.ts";
 import { fromRepoRoot } from "./paths.ts";
 import { HarnessError } from "./types.ts";
 
@@ -135,8 +132,15 @@ let defaultModels: MutableModels | undefined;
  */
 export function getModels(): MutableModels {
   if (!defaultModels) {
-    defaultModels = builtinModels({ credentials: new FileCredentialStore() });
-    registerLocalProviders(defaultModels);
+    // Built into a local, and cached only once fully constructed. Assigning
+    // first meant a throw from `registerLocalProviders` left the partial
+    // registry cached: every later call then returned successfully with the
+    // local providers silently missing, and `loadModel()` reported
+    // `modelNotFound` — pointing at the model config rather than the parse
+    // failure that actually happened. A failed build must stay failed.
+    const built = builtinModels({ credentials: new FileCredentialStore() });
+    registerLocalProviders(built);
+    defaultModels = built;
   }
   return defaultModels;
 }
@@ -156,9 +160,9 @@ function registerLocalProviders(models: MutableModels): void {
     return;
   }
 
-  let specs: Record<string, Omit<OpenAICompatibleProviderSpec, "id">>;
+  let parsed: unknown;
   try {
-    specs = JSON.parse(raw);
+    parsed = JSON.parse(raw);
   } catch (error) {
     throw new HarnessError(
       "invalidContext",
@@ -166,8 +170,11 @@ function registerLocalProviders(models: MutableModels): void {
     );
   }
 
-  for (const [id, spec] of Object.entries(specs)) {
-    models.setProvider(openAICompatibleProvider({ id, ...spec }));
+  // Validated to the same standard as model.config.json. Before this, a
+  // typo'd field here reached ConversationManager as `undefined` and
+  // disabled truncation outright.
+  for (const spec of parseLocalProviders(parsed, LOCAL_PROVIDERS_PATH)) {
+    models.setProvider(openAICompatibleProvider(spec));
   }
 }
 
@@ -182,7 +189,14 @@ export function loadModel(
   config: HarnessConfig,
   models: Models = getModels(),
 ): ResolvedModel {
-  const entry = config[configKey];
+  // `Object.hasOwn`, not truthiness: `config[configKey]` also matched
+  // inherited `Object.prototype` members, so `loadModel("constructor")`
+  // skipped this branch entirely and failed later with
+  // `No model "undefined" registered for provider "undefined"`. configKeys
+  // come straight from `process.argv` in both scripts. `parseConfig` now
+  // returns a null-prototype object too — this is the second half of the
+  // same fix, and it keeps the check correct for any config built by hand.
+  const entry = Object.hasOwn(config, configKey) ? config[configKey] : undefined;
   if (!entry) {
     const available = Object.keys(config).sort().join(", ") || "(none)";
     throw new HarnessError(

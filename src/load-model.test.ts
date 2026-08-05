@@ -64,3 +64,34 @@ test("throws modelNotFound when the provider has no such model", () => {
     (e: unknown) => e instanceof HarnessError && e.kind === "modelNotFound",
   );
 });
+
+// --- QA finding 9: prototype members are not config keys
+
+test("REGRESSION: a prototype member is reported as an unknown configKey", () => {
+  const config = parseConfig({
+    "codex-default": { provider: "p", modelId: "m", maxTokens: 10 },
+  });
+  // `config[configKey]` truthiness matched inherited members, so this
+  // skipped the unknownConfigKey branch and failed later with
+  // `No model "undefined" registered for provider "undefined"`. configKeys
+  // come straight from process.argv in both scripts.
+  for (const key of ["constructor", "toString", "hasOwnProperty", "__proto__"]) {
+    assert.throws(
+      () => loadModel(key, config),
+      /Unknown configKey/,
+      `"${key}" must be reported as unknown`,
+    );
+  }
+});
+
+test("REGRESSION: a __proto__ key does not poison the parsed config", () => {
+  const config = parseConfig({
+    real: { provider: "p", modelId: "m", maxTokens: 10 },
+    ["__proto__"]: { provider: "evil", modelId: "evil", maxTokens: 1 },
+  } as Record<string, unknown>);
+
+  // Previously this set the object's prototype instead of an own property:
+  // the entry vanished from Object.keys and every other entry inherited it.
+  assert.deepEqual(Object.keys(config).sort(), ["__proto__", "real"]);
+  assert.equal(config["real"]?.provider, "p");
+});

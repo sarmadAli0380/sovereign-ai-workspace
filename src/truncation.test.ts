@@ -137,8 +137,14 @@ test("result always fits the budget once the leading pair is resolved", () => {
     user("q".repeat(80)),
   ];
   const kept = dropOldestStrategy.truncate([...messages], 60);
-  // Either it fits, or it's the single newest message kept deliberately.
-  assert.ok(estimateContextTokens(kept) <= 60 || kept.length === 1);
+  // Asserted as a fact about behaviour, not as a disjunction. The old form
+  // (`fits || kept.length === 1`) passed whenever the fallback triggered,
+  // whatever the budget arithmetic did — so it could not have failed if the
+  // budget logic broke. Here the tool-call pair cannot be split and does not
+  // fit, so the documented outcome is precisely the newest message alone.
+  assert.equal(kept.length, 1, "the unsplittable leading pair must be dropped whole");
+  assert.equal(kept[0]?.role, "user");
+  assert.ok(estimateContextTokens(kept) <= 60, `single kept message should fit: ${estimateContextTokens(kept)}`);
 });
 
 // --- regressions found by the QA pass, 2026-08-04
@@ -199,8 +205,14 @@ test("REGRESSION: a conversation of images stays within budget", () => {
   });
   const messages = Array.from({ length: 20 }, image);
   const kept = dropOldestStrategy.truncate(messages, 10_000);
-  assert.ok(estimateContextTokens(kept) <= 10_000 || kept.length === 1);
-  assert.ok(kept.length < 20, "image-only history must actually be truncated");
+  // One 20k-char image estimates at ~6671 tokens, so exactly one fits and a
+  // second cannot. Asserting the number rather than `fits || length === 1`
+  // makes this fail if the image accounting regresses in either direction.
+  assert.equal(kept.length, 1, "image-only history must actually be truncated");
+  assert.ok(
+    estimateContextTokens(kept) <= 10_000,
+    `the one kept image must fit the budget: ${estimateContextTokens(kept)}`,
+  );
 });
 
 // --- 1.8: the Context costs tokens outside its message list
@@ -260,4 +272,36 @@ test("the get_weather schema is estimated above its measured wire cost", () => {
   });
   assert.ok(estimate > 38, `estimate ${estimate} must exceed the measured 38`);
   assert.ok(estimate < 38 * 3, `estimate ${estimate} is wastefully high`);
+});
+
+// --- QA finding 6: signature payloads are sent, so they must be counted
+
+test("REGRESSION: a thinking signature is not counted as free", () => {
+  // Measured against openai-codex: thinking 0 chars, thinkingSignature 1146.
+  // pi-ai sends it back to the provider, so scoring the message at 5 tokens
+  // was the image-block defect repeated on a different field.
+  const withSignature: AssistantMessage = {
+    ...assistant(""),
+    content: [
+      { type: "thinking", thinking: "", thinkingSignature: "s".repeat(1_146), redacted: true },
+      { type: "text", text: "42" },
+    ],
+  };
+  assert.ok(
+    estimateTokens(withSignature) > 300,
+    `1146 chars of replayed payload must not score ~5 tokens, got ${estimateTokens(withSignature)}`,
+  );
+});
+
+test("REGRESSION: a text signature is not counted as free", () => {
+  const bare: AssistantMessage = { ...assistant("hello") };
+  const signed: AssistantMessage = {
+    ...assistant("hello"),
+    content: [{ type: "text", text: "hello", textSignature: "x".repeat(600) }],
+  };
+  assert.ok(estimateTokens(signed) > estimateTokens(bare) + 100);
+});
+
+test("an unsigned message is unaffected by the signature accounting", () => {
+  assert.equal(estimateTokens(assistant("hello")), Math.ceil(5 / 3) + 4);
 });

@@ -170,7 +170,52 @@ export function kvBytesPerToken(geometry: ModelGeometry, kvCacheBits = 16): numb
   return layers * kvHeads * (keyDim + valueDim) * (kvCacheBits / 8);
 }
 
+/**
+ * Rejects inputs that cannot describe a real deployment.
+ *
+ * This module's whole purpose is telling someone whether a model fits a box
+ * they are about to buy, so garbage in must not produce a confident answer
+ * out. Before this, `sequences: 0` divided by zero and reported a maximum
+ * context of `Infinity`; a negative `contextTokens` produced −12.28 GB and
+ * "✓ fits"; and `sequences: -2` reported that the weights alone did not fit,
+ * which was simply false. A wrong number here is worse than an error,
+ * because it looks like advice.
+ */
+function assertUsable(input: SizingInput): void {
+  const problems: string[] = [];
+  const positive = (label: string, value: number, integer = false) => {
+    if (!Number.isFinite(value) || value <= 0) {
+      problems.push(`${label} must be a finite positive number, got ${value}`);
+    } else if (integer && !Number.isInteger(value)) {
+      problems.push(`${label} must be a whole number, got ${value}`);
+    }
+  };
+
+  const { layers, kvHeads, keyDim, valueDim } = input.geometry;
+  positive("geometry.layers", layers, true);
+  positive("geometry.kvHeads", kvHeads, true);
+  positive("geometry.keyDim", keyDim);
+  positive("geometry.valueDim", valueDim);
+
+  if (!Number.isFinite(input.contextTokens) || input.contextTokens < 0) {
+    problems.push(`contextTokens must be a finite non-negative number, got ${input.contextTokens}`);
+  }
+  if (input.sequences !== undefined) positive("sequences", input.sequences, true);
+  if (input.bitsPerWeight !== undefined) positive("bitsPerWeight", input.bitsPerWeight);
+  if (input.kvCacheBits !== undefined) positive("kvCacheBits", input.kvCacheBits);
+  if (input.weightsBytes !== undefined) positive("weightsBytes", input.weightsBytes);
+  if (input.weightsBytes === undefined && input.geometry.paramCount !== undefined) {
+    positive("geometry.paramCount", input.geometry.paramCount);
+  }
+
+  if (problems.length > 0) {
+    throw new Error(`Cannot size this model:\n${problems.map((p) => `  - ${p}`).join("\n")}`);
+  }
+}
+
 export function estimateMemory(input: SizingInput): SizingEstimate {
+  assertUsable(input);
+
   const {
     geometry,
     contextTokens,
@@ -253,6 +298,14 @@ export function maxContextFor(
   freeBytes: number,
   granularity = 256,
 ): number {
+  if (!Number.isFinite(freeBytes) || freeBytes < 0) {
+    throw new Error(`freeBytes must be a finite non-negative number, got ${freeBytes}`);
+  }
+  if (!Number.isFinite(granularity) || granularity <= 0 || !Number.isInteger(granularity)) {
+    // `granularity: 0` used to divide by zero and return NaN, which then
+    // formatted as a perfectly confident "max context: NaN tokens".
+    throw new Error(`granularity must be a positive whole number, got ${granularity}`);
+  }
   const base = estimateMemory({ ...input, contextTokens: 0 });
   const usable = Math.max(0, freeBytes - DEVICE_MEMORY_RESERVE_BYTES);
   const perCell =

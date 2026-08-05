@@ -1290,6 +1290,171 @@ the provider-name-in-control-flow pattern the 2026-08-04 audit removed here.
 
 ---
 
+## Adversarial QA pass #2 — ten defects under a green suite, 2026-08-05
+
+An unprimed QA agent was pointed at the repo with no steer about which
+files were recent or which decisions were settled, and told explicitly that
+a passing suite is not evidence. It found **ten defects while 142 tests
+passed and `tsc` was clean** — the second time this has happened on this
+project, and a stronger result than the first, because this time the newest
+and most carefully reviewed code was among the worst offenders.
+
+All ten are fixed; the suite is now 173 tests. What follows is what
+generalises, not a changelog.
+
+### The same defect class keeps recurring: real payload measured as free
+
+`estimateTokens` counted `thinkingSignature` and `textSignature` as zero.
+Measured against codex: `thinking: 0 chars, thinkingSignature: 1146 chars,
+textSignature: 92` — and the estimator scored that message at **5 tokens**.
+pi-ai sends both fields back to the provider (`anthropic-messages.js:894`,
+`:921`; `openai-responses-shared.js:139`).
+
+This is the *third* instance of exactly one mistake: measure the field you
+were thinking about, score the sibling field at zero. Images were the first
+(fixed 2026-08-04), tool-call arguments the second, signatures the third.
+**When a type is a union of block shapes, the estimator must enumerate the
+union, not the cases the author had in mind.**
+
+It also corrects 1.8. That ADR said codex "is replaying reasoning the
+harness cannot see and cannot measure." Wrong: the harness could see it all
+along, in a field it was not counting. The ~37 tokens/turn of unexplained
+input growth had a mundane explanation the whole time.
+
+Nuance that shaped the fix: 1238 characters of signature cost roughly 37
+tokens on the wire, so charging ciphertext at chars/3 overestimates by
+about an order of magnitude. Accepted anyway — it is the direction this
+module's contract asks for, signatures only appear on hosted reasoning
+models with very large windows, and the anchored path prices everything
+before the last turn from a measured count. Recorded as tunable rather than
+pretending one provider's single measurement justifies a second constant.
+
+### `NaN` defeats every `<= 0` guard, silently and in the worst direction
+
+One typo — `"contextWindows"` with a stray `s` in `local-providers.json` —
+produced `contextWindow: undefined`, then `budget = NaN`. Both of
+`ConversationManager`'s "this window is unusable" guards are written
+`<= 0`, and `NaN <= 0` is `false`, so both passed. Result: 500 messages,
+669k tokens, **truncation never fired**, no error anywhere, against a
+server serving 4096.
+
+That is precisely the silent-overflow failure the `contextWindow` override
+was introduced to prevent (2.5) — reintroduced through the one input path
+that had no validation. `model.config.json` had been validated field by
+field since 1.4, with a regression test proving a typo is rejected;
+`local-providers.json` fed the same machinery with a bare `JSON.parse`.
+
+**Two lessons.** Validate every input path to a value, not the one you were
+thinking about when you wrote the validator. And write numeric guards as
+`Number.isFinite(x) && x > 0`, never `x > 0` — the truthiness form fails
+open.
+
+### Swallowing an error to be forgiving can destroy what it was protecting
+
+`FileCredentialStore.readAll()` caught everything and returned `{}` as "the
+normal first-run state". But `modify()` and `delete()` are whole-file
+read-modify-writes built on it, so **any** unreadable file made the next
+write overwrite it — one `modify()` on any provider destroyed every other
+provider's credential and reported success. The file's own header comment
+claims write-then-rename protects against exactly this; it protects the
+write path, and the read path defeated it.
+
+The distinction that matters is **absent vs unreadable**, not *succeeded vs
+failed*. Absent and empty have nothing to lose, so `{}` is true and safe.
+Unreadable may hold a live OAuth token whose recovery needs a human at a
+browser, so the only safe move is to refuse.
+
+### A check that can never fire is worse than no check
+
+`validate-context.ts` catches duplicate tool names, with a comment
+explaining that `ToolRegistry` is keyed by name so a duplicate "silently
+overwrites". It did — and because `register()` was a bare `Map.set`,
+`getToolDefinitions()` came out deduplicated, so the check could never see
+a duplicate on the intended path. It guarded only hand-built arrays, while
+the overwrite it was written to catch went uncaught at its source. The fix
+belonged in `register()`, where the ambiguity originates.
+
+**A guard placed downstream of the thing that removes the evidence is
+decoration.**
+
+### Other findings, briefly
+
+- `getModels()` assigned the registry before registering local providers,
+  so a registration failure left the broken registry cached — every later
+  call succeeded with local providers silently missing, and `loadModel()`
+  blamed the model config for a parse error elsewhere.
+- `dispatchToolCall` copied the handler's return unchecked; `{}` yielded
+  `content: undefined` with **`isError: false`** — success-shaped — that
+  crashed a step later, away from the tool responsible.
+- `sizing.ts` answered `sequences: 0` with "max context: Infinity", a
+  negative context with "−12.28 GB, ✓ fits", and `sequences: -2` with "the
+  weights alone do not fit", which is simply false. For a tool whose output
+  is *advice*, a confident wrong number is worse than an error.
+- `config[configKey]` truthiness matched inherited prototype members, so
+  `loadModel("constructor")` — reachable from `process.argv` — reported
+  `No model "undefined"`. A `"__proto__"` key set the config's prototype
+  instead of an own property. Fixed with `Object.hasOwn` and a
+  null-prototype config. Note `validateContext` already got this right with
+  a `Set`, so two unknown-key checks in one codebase disagreed.
+- `getHistory()` handed out the live array that `append()` later replaces,
+  and `tools` was stored by reference despite a doc comment promising it
+  was fixed for the manager's lifetime.
+
+### On the anchor, and on my own fix being wrong twice
+
+Both 1.8 defects were mine, written the same day and reviewed carefully:
+
+1. `append()` could exit **over budget**. When an anchor exists, truncation
+   runs against a widened budget; if that pass cuts into the anchored
+   prefix the anchor is invalidated — and the kept set was never re-checked
+   against the now-unwidened budget. Measured at 4013 tokens against a 3000
+   budget, self-healing one turn too late, at the exact moment 1.5's
+   decision 4 exists to prevent ("nothing can build up and then blow the
+   window right as a call goes out").
+2. The anchor gate tested `usage.input <= 0` while the value taken was
+   `input + cacheRead + cacheWrite`. pi-ai normalises OpenAI usage as
+   `input = max(0, prompt_tokens − cacheRead − cacheWrite)`, so a fully
+   cached prefix arrives as `input: 0, cacheRead: 8000` — and the
+   measurement was discarded **precisely when caching works**. The comment
+   justifying it ("a non-empty request cannot cost nothing") is true of the
+   sum and false of `input` alone. I wrote the sum and then guarded the
+   part.
+
+Both are the same authorial failure: a guard written against an earlier
+draft of the value it guards. Neither would have been caught by more tests
+of the kind I was writing, because I was testing the behaviour I intended.
+
+### On test fixtures
+
+Three of my new tests failed on first run, and **all three were wrong
+fixtures, not wrong code**: messages that never approached the budget they
+claimed to overrun, a simulated truncation that deleted the token it then
+asserted had survived, a `maxContextFor` call missing a required field. A
+red test is a hypothesis about two things. Worth remembering before
+"fixing" the code it points at.
+
+### What the QA agent checked and could not break
+
+Recorded because a clean result is evidence too: `dropOldestStrategy`
+against 5000 randomised tool-call histories (no orphaned results, always a
+true suffix); the 2.4 sizing constants against llama.cpp's own allocation
+log; the `maxContextFor` → `fitsIn` round trip; the credential store's
+write serialisation; and the compat-merge claim in `openai-compatible.ts`.
+The `input + cacheRead + cacheWrite` sum itself was confirmed correct
+against both providers' normalisation — only the gate in front of it was
+wrong.
+
+### Still open
+
+The Phase 2 local-provider path — `openai-compatible.ts`,
+`registerLocalProviders`, `complete.ts`/retry, the `contextWindow` override
+— had **no unit tests at all**, and `harness.integration.test.ts` routes
+around it by calling `models.complete()` directly. `openai-compatible.ts`
+now has its own test file; the retry layer and the override still do not.
+That is the "headline result" of this project running untested.
+
+---
+
 ## Conceptual framework
 
 Applied a structural-vs-dynamic lens across the roadmap (full breakdown in

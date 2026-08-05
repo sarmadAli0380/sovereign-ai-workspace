@@ -51,18 +51,66 @@ export class FileCredentialStore implements CredentialStore {
     this.path = path;
   }
 
+  /**
+   * Reads the whole file.
+   *
+   * **Only a file that is genuinely absent or genuinely empty reads as
+   * `{}`.** Anything else — unreadable, malformed, wrong shape — throws.
+   *
+   * This used to catch everything and return `{}` as "the normal first-run
+   * state". But `modify()` and `delete()` are whole-file read-modify-writes
+   * built on this, so treating an unreadable file as empty meant the next
+   * write silently overwrote it: one `modify()` on any provider destroyed
+   * every other provider's credential, and reported success. The
+   * write-then-rename in `writeAll` protects the write path against exactly
+   * this, and the read path defeated it.
+   *
+   * The distinction that matters is *absent vs unreadable*, not
+   * *succeeded vs failed*. An absent or empty file has no credentials to
+   * lose, so `{}` is both true and safe. An unreadable one may hold live
+   * OAuth tokens whose recovery needs a browser, so the only safe move is
+   * to refuse and say so.
+   */
   private readAll(): Record<string, Credential> {
+    let raw: string;
     try {
-      const parsed: unknown = JSON.parse(readFileSync(this.path, "utf8"));
-      if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
-        return parsed as Record<string, Credential>;
-      }
-      return {};
-    } catch {
-      // Missing or unreadable file means "no credentials yet", which is the
-      // normal first-run state — not an error worth propagating.
-      return {};
+      raw = readFileSync(this.path, "utf8");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return {};
+      throw new Error(
+        `Credential file ${this.path} exists but could not be read ` +
+          `(${(error as NodeJS.ErrnoException).code ?? "unknown error"}). ` +
+          `Refusing to continue: treating it as empty would overwrite it on the next write.`,
+      );
     }
+
+    // A zero-byte file holds no credentials, so nothing can be lost by
+    // treating it as first-run. `writeAll` cannot produce one — it renames a
+    // fully written temp file into place — so this is only ever an
+    // externally created placeholder.
+    if (raw.trim() === "") return {};
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch (error) {
+      throw new Error(
+        `Credential file ${this.path} is not valid JSON: ` +
+          `${error instanceof Error ? error.message : String(error)}. ` +
+          `Refusing to continue — writing would destroy whatever it holds. ` +
+          `Move it aside to start fresh.`,
+      );
+    }
+
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+      throw new Error(
+        `Credential file ${this.path} must hold a JSON object keyed by provider id, ` +
+          `got ${Array.isArray(parsed) ? "an array" : typeof parsed}. ` +
+          `Refusing to continue — writing would destroy whatever it holds.`,
+      );
+    }
+
+    return parsed as Record<string, Credential>;
   }
 
   private writeAll(all: Record<string, Credential>): void {

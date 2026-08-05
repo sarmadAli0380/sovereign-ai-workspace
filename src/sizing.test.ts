@@ -178,3 +178,36 @@ test("maxContextFor returns 0 when the weights alone do not fit", () => {
   const tiny = 2 * 1024 * 1024 * 1024;
   assert.equal(maxContextFor({ geometry: qwen3_4b, weightsBytes: QWEN_WEIGHTS }, tiny), 0);
 });
+
+// --- QA finding 8: garbage in must not produce confident advice
+
+test("sizing rejects inputs that cannot describe a real deployment", () => {
+  const geometry = { paramCount: 4e9, layers: 36, kvHeads: 8, keyDim: 128, valueDim: 128 };
+
+  assert.throws(() => estimateMemory({ geometry, contextTokens: -100_000 }), /contextTokens/);
+  assert.throws(() => estimateMemory({ geometry, contextTokens: 4096, sequences: 0 }), /sequences/);
+  assert.throws(() => estimateMemory({ geometry, contextTokens: 4096, sequences: -2 }), /sequences/);
+  assert.throws(() => estimateMemory({ geometry, contextTokens: 4096, sequences: 1.5 }), /whole number/);
+  assert.throws(() => estimateMemory({ geometry, contextTokens: NaN }), /contextTokens/);
+  assert.throws(
+    () => estimateMemory({ geometry: { ...geometry, layers: 0 }, contextTokens: 4096 }),
+    /layers/,
+  );
+  assert.throws(
+    () => estimateMemory({ geometry, contextTokens: 4096, kvCacheBits: 0 }),
+    /kvCacheBits/,
+  );
+});
+
+test("REGRESSION: maxContextFor never reports Infinity or NaN", () => {
+  const geometry = { paramCount: 4e9, layers: 36, kvHeads: 8, keyDim: 128, valueDim: 128 };
+
+  // `sequences: 0` divided by zero and answered "Infinity tokens".
+  assert.throws(() => maxContextFor({ geometry, sequences: 0 }, 6e9), /sequences/);
+  // `granularity: 0` produced NaN, printed as a confident "NaN tokens".
+  assert.throws(() => maxContextFor({ geometry, bitsPerWeight: 4.97 }, 6e9, 0), /granularity/);
+  assert.throws(() => maxContextFor({ geometry, bitsPerWeight: 4.97 }, -1), /freeBytes/);
+
+  const ok = maxContextFor({ geometry, bitsPerWeight: 4.97 }, 6e9);
+  assert.ok(Number.isFinite(ok) && ok >= 0, `got ${ok}`);
+});

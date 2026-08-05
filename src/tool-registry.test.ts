@@ -256,3 +256,56 @@ test("REGRESSION: a zero-argument tool works with absent `arguments`", async () 
   assert.equal(ran, true, "handler should run when arguments are absent");
   assert.equal(result.isError, false);
 });
+
+// --- QA finding 7: a malformed handler return is this tool's failure
+
+test("REGRESSION: a handler returning the wrong shape yields an isError result, not a crash", async () => {
+  const registry = new ToolRegistry();
+  registry.register({
+    definition: { name: "bad", description: "d", parameters: Type.Object({}) },
+    // Reachable through `any`, a JSON.parse, or a plugin boundary.
+    execute: (async () => ({})) as unknown as ToolHandler["execute"],
+  });
+
+  const result = await dispatchToolCall(
+    { type: "toolCall", id: "y", name: "bad", arguments: {} },
+    registry,
+  );
+
+  assert.equal(result.isError, true, "a malformed return must not read as success");
+  assert.ok(Array.isArray(result.content), "content must always be an array");
+  assert.match(result.content.map((b) => (b.type === "text" ? b.text : "")).join(""), /malformed/);
+});
+
+test("a handler returning null or undefined is reported the same way", async () => {
+  const registry = new ToolRegistry();
+  for (const [name, value] of [["nully", null], ["undef", undefined]] as const) {
+    registry.register({
+      definition: { name, description: "d", parameters: Type.Object({}) },
+      execute: (async () => value) as unknown as ToolHandler["execute"],
+    });
+    const result = await dispatchToolCall(
+      { type: "toolCall", id: "z", name, arguments: {} },
+      registry,
+    );
+    assert.equal(result.isError, true, `${name} must be an error result`);
+  }
+});
+
+test("REGRESSION: registering a duplicate tool name is rejected, not silently applied", () => {
+  // validate-context carries a duplicate-name check whose comment says a
+  // duplicate "silently overwrites" here. It did — and because Map.set
+  // deduped, getToolDefinitions() never produced the duplicate that check
+  // was looking for, so the overwrite went uncaught everywhere.
+  const registry = new ToolRegistry();
+  const tool = (name: string): ToolHandler => ({
+    definition: { name, description: "d", parameters: Type.Object({}) },
+    async execute() {
+      return { content: [{ type: "text", text: name }] };
+    },
+  });
+
+  registry.register(tool("dup"));
+  assert.throws(() => registry.register(tool("dup")), /already registered/);
+  assert.equal(registry.getToolDefinitions().length, 1);
+});

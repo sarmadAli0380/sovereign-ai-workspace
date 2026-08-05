@@ -208,7 +208,13 @@ export function parseConfig(raw: unknown): HarnessConfig {
     throw new HarnessError("invalidContext", "Config must be a JSON object keyed by configKey.");
   }
 
-  const config: HarnessConfig = {};
+  // Null-prototype, so a configKey never collides with an inherited member.
+  // With a normal object literal, `"__proto__"` in the JSON set the returned
+  // object's *prototype* instead of an own property — the entry vanished
+  // from `Object.keys` and every other entry silently inherited its fields.
+  // The same prototype chain is why `config[key]` truthiness checks used to
+  // match `"constructor"` and `"toString"`; see `loadModel`.
+  const config: HarnessConfig = Object.create(null) as HarnessConfig;
   for (const [key, value] of Object.entries(raw)) {
     config[key] = assertEntry(key, value);
   }

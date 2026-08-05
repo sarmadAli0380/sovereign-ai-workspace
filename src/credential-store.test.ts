@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { mkdtempSync, statSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Credential } from "@earendil-works/pi-ai";
@@ -104,4 +104,77 @@ test("many concurrent writes all land", async () => {
   const listed = await store.list();
   assert.equal(listed.length, 25);
   for (const id of ids) assert.deepEqual(await store.read(id), apiKey(id));
+});
+
+// --- QA finding 3: an unreadable file must never be treated as empty
+
+function tempPath(): string {
+  return join(mkdtempSync(join(tmpdir(), "harness-creds-")), "creds.json");
+}
+
+test("a missing file still reads as first-run", async () => {
+  const store = new FileCredentialStore(tempPath());
+  assert.deepEqual(await store.list(), []);
+  assert.equal(await store.read("anthropic"), undefined);
+});
+
+test("an empty file still reads as first-run — it has nothing to lose", async () => {
+  const path = tempPath();
+  writeFileSync(path, "");
+  const store = new FileCredentialStore(path);
+  assert.deepEqual(await store.list(), []);
+  await store.modify("anthropic", async () => apiKey("A"));
+  assert.deepEqual(await store.read("anthropic"), apiKey("A"));
+});
+
+test("REGRESSION: a corrupt file is not silently overwritten by modify()", async () => {
+  const path = tempPath();
+  const store = new FileCredentialStore(path);
+  await store.modify("anthropic", async () => apiKey("A"));
+  await store.modify("openai-codex", async () => apiKey("IRREPLACEABLE"));
+
+  // Simulate a write truncated part-way: the codex entry is still in the
+  // bytes on disk, which is exactly why overwriting rather than failing
+  // would be unrecoverable.
+  writeFileSync(
+    path,
+    '{"anthropic": {"type": "api_key", "key": "A"}, ' +
+      '"openai-codex": {"type": "api_key", "key": "IRREPLACEABLE"',
+  );
+
+  await assert.rejects(
+    () => store.modify("anthropic", async () => apiKey("REFRESHED")),
+    /not valid JSON/,
+  );
+  // The point of the throw: the other provider's credential survives.
+  assert.match(readFileSync(path, "utf8"), /IRREPLACEABLE/);
+});
+
+test("REGRESSION: a corrupt file is not wiped by delete() either", async () => {
+  const path = tempPath();
+  writeFileSync(path, "not json at all");
+  const store = new FileCredentialStore(path);
+
+  await assert.rejects(() => store.delete("nobody"), /not valid JSON/);
+  assert.equal(readFileSync(path, "utf8"), "not json at all");
+});
+
+test("a JSON array is rejected rather than read as no credentials", async () => {
+  const path = tempPath();
+  writeFileSync(path, '[{"type": "api_key", "key": "A"}]');
+  const store = new FileCredentialStore(path);
+  await assert.rejects(() => store.list(), /keyed by provider id/);
+});
+
+test("an unreadable file reports why, and names the file", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "harness-creds-"));
+  const path = join(dir, "creds.json");
+  writeFileSync(path, "{}");
+  chmodSync(path, 0o000);
+  const store = new FileCredentialStore(path);
+  try {
+    await assert.rejects(() => store.list(), new RegExp(path.replace(/[/\\]/g, "\\$&")));
+  } finally {
+    chmodSync(path, 0o600);
+  }
 });

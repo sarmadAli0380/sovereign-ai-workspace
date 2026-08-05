@@ -43,12 +43,18 @@ for (let i = 2; i < process.argv.length; i += 1) {
   }
 }
 
-function num(key: string): number | undefined {
+function num(key: string, min = 0): number | undefined {
   const raw = args.get(key);
   if (raw === undefined) return undefined;
   const value = Number(raw);
   if (!Number.isFinite(value)) {
     console.error(`✗ --${key} must be a number, got "${raw}"`);
+    process.exit(1);
+  }
+  // Checked at the boundary as well as in `sizing.ts`. A negative context
+  // used to print a negative total and "✓ fits — 17.21 GB headroom".
+  if (value < min) {
+    console.error(`✗ --${key} must be at least ${min}, got ${value}`);
     process.exit(1);
   }
   return value;
@@ -161,8 +167,8 @@ if (bitsPerWeight === undefined) {
   fail(`unknown --quant "${quant}". Known: ${Object.keys(BITS_PER_WEIGHT).join(", ")}`);
 }
 
-const kvCacheBits = num("kv-bits") ?? 16;
-const sequences = num("sequences") ?? 1;
+const kvCacheBits = num("kv-bits", 1) ?? 16;
+const sequences = num("sequences", 1) ?? 1;
 const budgetGb = num("budget");
 const freeBytes = budgetGb === undefined ? undefined : budgetGb * 1e9;
 
@@ -191,6 +197,15 @@ console.log(
 );
 if (sequences > 1) console.log(`sequences:    ${sequences} concurrent`);
 if (freeBytes !== undefined) console.log(`free memory:  ${budgetGb} GB (1 GiB reserved by the runtime)`);
+
+// Sizing rejects inputs that cannot describe a real deployment. Surface that
+// as advice rather than as a stack trace — this tool exists to answer a
+// hardware question, so an unusable answer must read like one.
+try {
+  estimateMemory({ ...base, contextTokens: 0 });
+} catch (error) {
+  fail(error instanceof Error ? error.message : String(error));
+}
 
 const ctx = num("ctx");
 if (ctx !== undefined) {

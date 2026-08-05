@@ -15,6 +15,7 @@
 import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy";
 import { createProvider } from "@earendil-works/pi-ai";
 import type { Model, Provider } from "@earendil-works/pi-ai";
+import { HarnessError } from "./types.ts";
 
 export interface OpenAICompatibleModelSpec {
   /** Model id as the server knows it, e.g. "qwen3:4b". */
@@ -74,6 +75,125 @@ export interface OpenAICompatibleProviderSpec {
 const SELF_HOSTED_COMPAT: Model<"openai-completions">["compat"] = {
   maxTokensField: "max_tokens",
 };
+
+/**
+ * Validates `local-providers.json`.
+ *
+ * `model.config.json` has been validated field-by-field since 1.4, with a
+ * regression test proving a typo is rejected rather than ignored. This file
+ * had no equivalent, and it feeds the same machinery — so a one-character
+ * typo landed as `undefined` and propagated. `"contextWindows"` with a
+ * stray `s` produced `contextWindow: undefined`, then a `NaN` budget, then
+ * a conversation that never truncated at all: the exact silent-overflow
+ * failure the `contextWindow` override exists to prevent (2.5).
+ *
+ * Numeric fields are checked with `Number.isFinite`, not truthiness. `NaN`
+ * and `Infinity` are both JSON-reachable via arithmetic upstream and both
+ * defeat every `<= 0` guard downstream.
+ */
+export function parseLocalProviders(
+  raw: unknown,
+  source: string,
+): OpenAICompatibleProviderSpec[] {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+    throw new HarnessError(
+      "invalidContext",
+      `${source} must be a JSON object keyed by provider id, got ` +
+        `${Array.isArray(raw) ? "an array" : raw === null ? "null" : typeof raw}.`,
+    );
+  }
+
+  const problems: string[] = [];
+  const specs: OpenAICompatibleProviderSpec[] = [];
+
+  for (const [id, value] of Object.entries(raw)) {
+    const where = `provider "${id}"`;
+
+    if (typeof value !== "object" || value === null || Array.isArray(value)) {
+      problems.push(`${where}: must be an object, got ${value === null ? "null" : typeof value}`);
+      continue;
+    }
+    const spec = value as Record<string, unknown>;
+
+    if (!id.trim()) problems.push(`provider id must not be blank`);
+
+    if (typeof spec["baseUrl"] !== "string" || !spec["baseUrl"].trim()) {
+      problems.push(`${where}: \`baseUrl\` must be a non-empty string`);
+    }
+
+    const known = new Set(["baseUrl", "models", "name", "apiKey", "compat"]);
+    for (const key of Object.keys(spec)) {
+      if (!known.has(key)) {
+        // `id` is called out separately: it is not merely unread, it used to
+        // silently *win* over the object key it was nested under.
+        problems.push(
+          key === "id"
+            ? `${where}: \`id\` is taken from the object key, not the entry — remove it`
+            : `${where}: unknown field \`${key}\` — nothing reads it (typo?)`,
+        );
+      }
+    }
+
+    const models = spec["models"];
+    if (!Array.isArray(models)) {
+      problems.push(`${where}: \`models\` must be an array`);
+      continue;
+    }
+    if (models.length === 0) {
+      problems.push(`${where}: \`models\` is empty — the provider would have nothing to serve`);
+    }
+
+    for (const [index, model] of models.entries()) {
+      const at = `${where} model[${index}]`;
+      if (typeof model !== "object" || model === null || Array.isArray(model)) {
+        problems.push(`${at}: must be an object`);
+        continue;
+      }
+      const m = model as Record<string, unknown>;
+
+      if (typeof m["id"] !== "string" || !m["id"].trim()) {
+        problems.push(`${at}: \`id\` must be a non-empty string`);
+      }
+      for (const field of ["contextWindow", "maxTokens"]) {
+        const raw = m[field];
+        if (typeof raw !== "number" || !Number.isFinite(raw) || raw <= 0) {
+          problems.push(
+            `${at}: \`${field}\` must be a finite positive number, got ${
+              raw === undefined ? "nothing (typo?)" : JSON.stringify(raw)
+            }`,
+          );
+        }
+      }
+
+      const knownModel = new Set([
+        "id",
+        "contextWindow",
+        "maxTokens",
+        "name",
+        "reasoning",
+        "input",
+      ]);
+      for (const key of Object.keys(m)) {
+        if (!knownModel.has(key)) {
+          problems.push(`${at}: unknown field \`${key}\` — nothing reads it (typo?)`);
+        }
+      }
+    }
+
+    if (problems.length === 0) {
+      specs.push({ ...(spec as Omit<OpenAICompatibleProviderSpec, "id">), id });
+    }
+  }
+
+  if (problems.length > 0) {
+    throw new HarnessError(
+      "invalidContext",
+      `${source} is invalid:\n${problems.map((p) => `  - ${p}`).join("\n")}`,
+    );
+  }
+
+  return specs;
+}
 
 export function openAICompatibleProvider(spec: OpenAICompatibleProviderSpec): Provider {
   const models: Model<"openai-completions">[] = spec.models.map((m) => ({

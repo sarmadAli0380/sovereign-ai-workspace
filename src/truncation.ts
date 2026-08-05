@@ -69,6 +69,37 @@ function imageChars(block: { data?: string }): number {
   return block.data?.length ?? 0;
 }
 
+/**
+ * Characters in a text block, including its signature.
+ *
+ * `TextContent.textSignature` and `ThinkingContent.thinkingSignature` hold
+ * opaque payloads that pi-ai **sends back to the provider** — as
+ * `redacted_thinking.data` and `thinking.signature` on Anthropic
+ * (`anthropic-messages.js:894`, `:921`), and as a parsed reasoning item on
+ * the OpenAI Responses path (`openai-responses-shared.js:139`). Counting
+ * them as zero is the same defect as the image-block case above: real
+ * payload measured as free.
+ *
+ * Measured against `openai-codex`: a single reasoning turn returned
+ * `thinking: 0 chars, thinkingSignature: 1146 chars, textSignature: 92`,
+ * and `estimateTokens` scored the whole message at 5 tokens. That is where
+ * the ~37 tokens/turn of unexplained input growth in 1.8 came from — the
+ * harness could see the payload all along and was not counting it.
+ *
+ * Deliberately charged at the same chars/token rate as prose even though
+ * ciphertext is denser: the 1238 characters above cost roughly 37 tokens on
+ * the wire, so chars/3 overestimates them by around an order of magnitude.
+ * That is the direction this module's contract asks for, and the cost is
+ * bounded — signatures only appear on assistant turns from hosted reasoning
+ * models, which carry very large windows, and the anchored path prices
+ * everything before the last turn from a measured count anyway. TUNABLE: a
+ * separate, higher chars-per-token constant for signatures would be
+ * sharper, but one provider's single measurement is not enough to pick it.
+ */
+function textChars(block: { text?: string; textSignature?: string }): number {
+  return (block.text?.length ?? 0) + (block.textSignature?.length ?? 0);
+}
+
 export function estimateTokens(message: Message): number {
   let chars = 0;
 
@@ -78,17 +109,17 @@ export function estimateTokens(message: Message): number {
         typeof message.content === "string"
           ? message.content.length
           : message.content.reduce(
-              (sum, block) =>
-                sum + (block.type === "text" ? block.text.length : imageChars(block)),
+              (sum, block) => sum + (block.type === "text" ? textChars(block) : imageChars(block)),
               0,
             );
       break;
 
     case "assistant":
       for (const block of message.content) {
-        if (block.type === "text") chars += block.text.length;
-        else if (block.type === "thinking") chars += block.thinking.length;
-        else if (block.type === "toolCall") {
+        if (block.type === "text") chars += textChars(block);
+        else if (block.type === "thinking") {
+          chars += block.thinking.length + (block.thinkingSignature?.length ?? 0);
+        } else if (block.type === "toolCall") {
           chars += block.name.length + JSON.stringify(block.arguments ?? {}).length;
         }
       }
@@ -98,7 +129,7 @@ export function estimateTokens(message: Message): number {
       chars =
         message.toolName.length +
         message.content.reduce(
-          (sum, block) => sum + (block.type === "text" ? block.text.length : imageChars(block)),
+          (sum, block) => sum + (block.type === "text" ? textChars(block) : imageChars(block)),
           0,
         );
       break;

@@ -121,11 +121,20 @@ interface UsageAnchor {
 function anchorFrom(message: Message, messageIndex: number): UsageAnchor | undefined {
   if (message.role !== "assistant") return undefined;
   const usage = message.usage;
-  if (!usage || usage.input <= 0) return undefined;
-  return {
-    tokens: usage.input + (usage.cacheRead ?? 0) + (usage.cacheWrite ?? 0),
-    messageIndex,
-  };
+  if (!usage) return undefined;
+
+  // Gate on the SUM, not on `input`. Gating on `input` discarded the
+  // measurement in exactly the case caching works: pi-ai normalises OpenAI
+  // usage as `input = max(0, prompt_tokens − cacheRead − cacheWrite)`
+  // (`api/openai-completions.js:1069`), so a fully cached prefix arrives as
+  // `input: 0, cacheRead: 8000` — a real 8000-token request that read as no
+  // measurement at all, falling back to a heuristic hundreds of times
+  // smaller. "A non-empty request cannot cost nothing" is true of the sum
+  // and false of `input` alone.
+  const tokens = usage.input + (usage.cacheRead ?? 0) + (usage.cacheWrite ?? 0);
+  if (!Number.isFinite(tokens) || tokens <= 0) return undefined;
+
+  return { tokens, messageIndex };
 }
 
 export interface ConversationManagerOptions {
@@ -222,6 +231,22 @@ export class ConversationManager {
   constructor(options: ConversationManagerOptions) {
     // Scaled down for small windows — an explicit `reserveTokens` is still
     // capped, since the same arithmetic breaks whoever supplied it.
+    // Checked with `Number.isFinite`, not truthiness, and checked here
+    // rather than downstream. `NaN <= 0` is `false`, so a NaN window sailed
+    // past both guards below and produced a NaN budget — which no message
+    // can ever exceed, disabling truncation entirely while every accessor
+    // still reported success. Rejecting the input is the only place this
+    // can be caught once.
+    if (!Number.isFinite(options.contextWindow)) {
+      throw new Error(
+        `contextWindow must be a finite number, got ${options.contextWindow}. ` +
+          `A non-finite window disables truncation rather than widening it.`,
+      );
+    }
+    if (options.reserveTokens !== undefined && !Number.isFinite(options.reserveTokens)) {
+      throw new Error(`reserveTokens must be a finite number, got ${options.reserveTokens}.`);
+    }
+
     const reserve = resolveReserveTokens(
       options.contextWindow,
       options.reserveTokens ?? DEFAULT_RESERVE_TOKENS,
@@ -240,7 +265,12 @@ export class ConversationManager {
     this.context = {
       ...(options.systemPrompt !== undefined ? { systemPrompt: options.systemPrompt } : {}),
       messages: [],
-      ...(options.tools !== undefined ? { tools: options.tools } : {}),
+      // Copied, not aliased. `overheadTokens` below is computed once from
+      // these, so a caller mutating the array they passed in would change
+      // what gets sent while the cached cost stayed stale — and the doc on
+      // `overheadTokens` promises they are fixed for this object's lifetime.
+      // A copy is what makes that promise true rather than aspirational.
+      ...(options.tools !== undefined ? { tools: [...options.tools] } : {}),
     };
 
     // 1.8: the system prompt and tool schemas are sent on every request and
@@ -282,7 +312,7 @@ export class ConversationManager {
     const anchored = anchorFrom(toAppend, previous.length - 1);
     if (anchored) this.anchor = anchored;
 
-    const kept = this.strategy.truncate(previous, this.truncationBudget());
+    let kept = this.strategy.truncate(previous, this.truncationBudget());
 
     // Truncation invalidates the anchor: its token count covered messages
     // that are no longer here, so it now describes a conversation that does
@@ -291,6 +321,18 @@ export class ConversationManager {
     // the very next response re-anchors.
     if (kept.length !== previous.length || kept[0] !== previous[0]) {
       this.anchor = undefined;
+
+      // ...and then truncate AGAIN, against the unanchored budget.
+      //
+      // The first pass ran against a budget widened by the anchor. Once the
+      // anchor is gone that allowance is gone with it, and the set it kept
+      // can be well over the plain budget — measured at 4013 tokens against
+      // a 3000 budget. Leaving it would break decision 4 in this class's
+      // doc comment ("the Context is always within budget") at the worst
+      // possible moment, since `append()` is the last thing to run before a
+      // call goes out. The old code self-healed on the *next* append, one
+      // turn too late.
+      kept = this.strategy.truncate(kept, this.messageBudget);
     }
 
     this.context.messages = kept;
@@ -330,8 +372,17 @@ export class ConversationManager {
     for (const message of messages) this.append(message);
   }
 
+  /**
+   * A snapshot of the history.
+   *
+   * Copied rather than handed out live. `append()` pushes into the array and
+   * then replaces it wholesale on truncation, so a caller holding an earlier
+   * result ended up with a list that was neither the old history nor the
+   * current one — it had seen some appends and none of the truncation. A
+   * snapshot is at least a coherent moment in time.
+   */
   getHistory(): readonly Message[] {
-    return this.context.messages;
+    return [...this.context.messages];
   }
 
   /** What actually gets passed to pi-ai's `complete()`/`stream()`. */

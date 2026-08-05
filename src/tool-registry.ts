@@ -37,8 +37,29 @@ export interface ToolHandler {
 export class ToolRegistry {
   private handlers = new Map<string, ToolHandler>();
 
+  /**
+   * Registers a tool. A duplicate name is an error, not a replacement.
+   *
+   * `validate-context.ts` carries a duplicate-name check whose comment says
+   * a duplicate "silently overwrites" here — but because this was a bare
+   * `Map.set`, `getToolDefinitions()` came out deduplicated and that check
+   * could never fire on the intended path. It only ever guarded a hand-built
+   * `tools` array, while the overwrite it was written to catch went
+   * uncaught at its source. This is that source.
+   *
+   * Rejecting rather than replacing is deliberate: two tools claiming one
+   * name is an ambiguity the caller has to resolve, and silently keeping the
+   * last one means dispatch routes somewhere the caller did not choose.
+   */
   register(handler: ToolHandler): void {
-    this.handlers.set(handler.definition.name, handler);
+    const name = handler.definition.name;
+    if (this.handlers.has(name)) {
+      throw new Error(
+        `A tool named "${name}" is already registered. ` +
+          `Two tools cannot share a name — dispatch is keyed by it.`,
+      );
+    }
+    this.handlers.set(name, handler);
   }
 
   /**
@@ -112,6 +133,24 @@ export async function dispatchToolCall(
 
   try {
     const result = await handler.execute(args);
+
+    // The handler's return value is checked, not trusted. The type says
+    // `{ content: [...] }`, but a handler reached through `any`, a
+    // `JSON.parse`, or a plugin boundary can return anything — and copying
+    // `result.content` unchecked produced a result with `content: undefined`
+    // and `isError: false`. That reads as *success* to every caller, then
+    // crashes a step later inside whoever touches `content`, far from the
+    // tool that caused it. This function's documented contract is that every
+    // failure path comes back as an `isError` result, so a malformed return
+    // is a failure of this tool, reported here.
+    if (!result || !Array.isArray(result.content)) {
+      return errorResult(
+        toolCall,
+        `Tool "${toolCall.name}" returned a malformed result: expected { content: [...] }, got ` +
+          `${result === undefined || result === null ? String(result) : JSON.stringify(result)}.`,
+      );
+    }
+
     return {
       role: "toolResult",
       toolCallId: toolCall.id,
