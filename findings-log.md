@@ -1117,6 +1117,137 @@ against installed memory overstates capacity twice over.
 
 ---
 
+## Token budgeting — two defects, and a redesigned fix, 2026-08-05
+
+Investigating the "Codex hybrid" the handoff described as *transcription,
+not design*. It was neither. Full write-up in
+`phase1/adrs/1.8-token-budgeting.md`; the findings are below.
+
+Prompted by the user pointing at `odysseus-dev/odysseus` (84.8k stars,
+Python, multi-provider) as a possible source of answers. It supplied two,
+and the live probes supplied the rest.
+
+### The budget never counted the system prompt or the tool schemas
+
+`ConversationManager.getEstimatedTokens()` and `dropOldestStrategy` both
+walk `context.messages`. But the constructor stores `systemPrompt` and
+`tools` as *sibling fields* on the `Context`, and both are sent on every
+request. Neither has ever been counted.
+
+Measured on `verify-live`, whose whole message list at turn 1 is one
+23-token user string:
+
+| | estimator | provider |
+|---|---|---|
+| codex turn-1 input | 23 | **82** |
+| ollama turn-1 input | 23 | **153** |
+
+Decomposing codex: ~21 tokens of system prompt, ~38 for one trivial tool
+schema. A no-tools probe closed to within 8 tokens of the reported input.
+
+**So the chars/3 estimator is roughly right on prose — the bug is coverage,
+not arithmetic.** One toy tool costs ~38 invisible tokens; a real agent
+carries fifteen. And turn 1 is exactly the turn a usage anchor can never
+help with, because no response has arrived. This fix is independent of the
+anchor and should land first.
+
+### An assistant turn's replay cost is not what the harness holds
+
+Two three-turn probes, identical prompts, written to force heavy reasoning
+behind a one-word answer so any large `output` must be reasoning.
+
+| | codex `gpt-5.6-luna` | qwen3:4b |
+|---|---|---|
+| turn 1 | in 74, out 58 | in 75, out **1261** |
+| turn 2 | in 172, out 50 | in 125, out **1880** |
+| turn 3 | in 248, out 23 | in 160, out **1164** |
+| thinking block | **0 chars** | 3106 / 4930 / 3403 chars |
+
+The harness's record of an assistant turn is wrong on both, in **opposite
+directions**:
+
+- **Codex** hands back an empty `thinking` block. The harness records ~3
+  tokens; the provider's input grows ~37/turn more than that content
+  explains. It is replaying reasoning we cannot see. We **understate**.
+- **Qwen** hands back 3106 characters of thinking, which `estimateTokens`
+  dutifully counts as ≈1039 tokens — and the next input went 75 → 125. It
+  was not replayed at all. We **overstate**, by ~9×.
+
+Reasoning tokens *are* counted in `usage.output` on both (58 output tokens
+for an 8-character answer). That closes the open question about codex, and
+simultaneously makes `output` useless as a predictor: the tokens are real,
+their replay is not.
+
+**The generalisable lesson, and it is the same shape as *tolerance is not
+support*: a token you were billed for is not a token that will be resent.**
+Accounting for generation and accounting for context are different
+questions, and only the second sizes a budget.
+
+Replay also appears to depend on message *shape* — the earlier
+tool-calling run on the same qwen model showed turn-2 input of 396 against
+a turn-1 total of 376, i.e. the whole turn including thinking replayed,
+the opposite of this probe. Likely reasoning survives a tool-call
+continuation and is dropped once a user message closes the turn. Observed,
+not characterised.
+
+Recording a wrong call: I inferred from that single tool-calling data point
+that qwen replays thinking, while flagging that it rested on an arithmetic
+coincidence. The probe disproved it. The flag was worth more than the
+inference.
+
+### The obvious fix was measured and rejected
+
+Anchoring on `prev.in + prev.out` — the literal reading of the codex-hybrid
+design — is safe on codex (+11 to +17 tokens) and unusable on qwen
+(+1268, +1882, i.e. 11–13×). On an 8192 window it would truncate a
+conversation the server sees as 160 tokens.
+
+What ships instead: anchor on **`prev.in`** — the one number that measures
+what was actually sent — and estimate only the messages appended since. It
+is still visibly wrong per turn (−38 on codex, +1046 on qwen), but it has
+the property neither alternative has: **the error cannot compound**, because
+every turn re-anchors on freshly measured truth.
+
+That reframed the whole change. Today's code estimates the whole history, so
+on the qwen probe it would report ≈2838 tokens at turn 3 against a real 160,
+and the gap widens forever. **The defect is unbounded drift, not per-turn
+inaccuracy** — and per-turn accuracy stays mediocre after the fix, which is
+fine.
+
+### Two things odysseus contributed
+
+1. **They never made this change.** `trim_for_context()` gates purely on
+   their chars×0.3 heuristic; reported usage is streamed to the UI as
+   telemetry and never enters a trimming decision. Even their agent log line
+   labelled `prompt_tokens=` is the estimate. A large multi-provider harness
+   runs in production on the heuristic alone — which demotes this from
+   "known-wrong code" to "a real improvement on something that works".
+2. **Usage absence is per-response, not per-provider.** Their
+   `test_llm_core_usage_finish_delta.py` documents a shipped bug where usage
+   riding on a non-empty finish delta was dropped, so those providers'
+   accounting read zero; sibling cases cover null usage and null heartbeat
+   chunks. That decided Decision A on its own: a `usageReported: false`
+   config flag would encode a transient transport failure as a permanent
+   provider property. Config should declare what the response *cannot* tell
+   you; this is not that.
+
+Also worth noting what not to copy: their `max_completion_tokens` routing is
+a hardcoded model-name set (`o1`, `o3`, `o4`, `gpt-4.5`, `gpt-5`) — exactly
+the provider-name-in-control-flow pattern the 2026-08-04 audit removed here.
+
+### Failed predictions
+
+- **Wrong:** that the reported-usage anchor was mechanical. Measuring it
+  changed the anchor quantity, surfaced a second unrelated defect, and made
+  the ordering of the work matter.
+- **Wrong:** that qwen replays thinking (see above).
+- **Right:** that codex's usage would turn out trustworthy despite it
+  ignoring `maxTokens`, and that the two are unrelated failure modes.
+- **Right:** that the risk worth probing was reasoning tokens. It was the
+  probe that produced everything else.
+
+---
+
 ## Conceptual framework
 
 Applied a structural-vs-dynamic lens across the roadmap (full breakdown in
@@ -1172,6 +1303,10 @@ usually resolves the design.
   provider (implemented, not yet run — blocked on OAuth re-authorization).
 - `scripts/verify-swap.ts` — 1.4's swap DoD: same prompt through two config
   keys, structural diff (implemented, not yet run — same blocker).
+- `phase1/adrs/1.8-token-budgeting.md` — token budgeting: the two defects
+  above, why the `prev.in + prev.out` anchor was measured and rejected, and
+  Decisions A (per-response stale anchor, not a config flag) and B (codex
+  usage verified, reasoning tokens included).
 - `phase2/adrs/2.4-gpu-sizing-math.md` — 2.4: the memory formula, measured
   across two model families, with the fit boundary and concurrency term.
 - `src/sizing.ts` + `src/sizing.test.ts` — the formula as code, with every

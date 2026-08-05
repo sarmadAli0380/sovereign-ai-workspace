@@ -86,6 +86,15 @@ Every one was "pi-ai does X" when it didn't, found at implementation cost:
 **Treat any remaining "pi-ai already handles X" claim as unverified until
 executed.** A grep would have caught most of these.
 
+### A billed token is not a resent token
+
+The 2026-08-05 sibling of the rule below. `usage.output` counts reasoning
+tokens on both providers — but codex replays reasoning the harness cannot
+see, and qwen discards 3106 characters of thinking that the harness dutifully
+counts. The same message record is an underestimate on one provider and a
+9× overestimate on the other. **Accounting for generation and accounting for
+context are different questions**, and only the second sizes a budget.
+
 ### Tolerance is not support
 
 The single most useful rule this project produced. Probing six compat flags
@@ -140,20 +149,26 @@ context (148,480 B/token on qwen3:4b) right up until it isn't.
 
 ## What to work on next, in order
 
-### 1. Token budgeting — the Codex hybrid (recommended starting point)
+### 1. Token budgeting (recommended starting point)
 
-Known-wrong code. `ConversationManager` re-estimates the whole conversation
-with a chars/3 heuristic measured to underestimate code by ~1.37×.
+**Designed and measured, not yet implemented** —
+`phase1/adrs/1.8-token-budgeting.md` has the decisions and the evidence.
+The handoff used to call this "transcription, not design". Probing it found
+a second, unrelated defect and disproved the obvious form of the fix, so
+read the ADR before starting.
 
-The design is already settled — from `openai/codex`,
-`codex-rs/core/src/context_manager/history.rs:298`: anchor on the
-provider's **actual** reported token count and estimate only the delta
-since the last response. Error can then only apply to the recent delta
-rather than compounding over the whole history. `AssistantMessage.usage`
-already carries the number and `HarnessResult` already surfaces it — it is
-currently thrown away for budgeting.
+Two changes, in this order:
 
-This is transcription, not design.
+1. **`estimateContextTokens` must count `systemPrompt` and `tools`.** They
+   sit on the `Context` as sibling fields and are sent on every request, and
+   neither the budget nor truncation has ever counted them. Measured: a
+   23-token message list reported as an 82-token input on codex, 153 on
+   ollama. Provider-independent, strictly correct, land it first.
+2. **Anchor on `prev.in`** — the measured size of what was actually sent —
+   and estimate only the messages appended since. Not `prev.in + prev.out`:
+   that was measured at 11–13× too high on qwen, because reasoning tokens
+   are billed but not replayed. The win is that error stops compounding, not
+   that any single turn gets accurate.
 
 ### 2. Smaller open items
 
