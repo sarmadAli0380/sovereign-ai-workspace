@@ -45,6 +45,7 @@ export {
 export {
   dropOldestStrategy,
   estimateContextTokens,
+  estimateOverheadTokens,
   estimateTokens,
   type TruncationStrategy,
 } from "./truncation.ts";

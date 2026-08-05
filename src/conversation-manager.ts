@@ -14,7 +14,12 @@
  */
 
 import type { Context, Message, TextContent, ToolResultMessage } from "@earendil-works/pi-ai";
-import { dropOldestStrategy, estimateContextTokens, type TruncationStrategy } from "./truncation.ts";
+import {
+  dropOldestStrategy,
+  estimateContextTokens,
+  estimateOverheadTokens,
+  type TruncationStrategy,
+} from "./truncation.ts";
 
 /**
  * TUNABLE — not settled. The ADR explicitly left these open, to be revisited
@@ -137,8 +142,19 @@ export function capToolResult(
 
 export class ConversationManager {
   private context: Context;
-  /** contextWindow minus reserveTokens. */
+  /** contextWindow minus reserveTokens. Covers the whole Context. */
   private readonly budget: number;
+  /**
+   * The system prompt and tool schemas, charged once.
+   *
+   * Fixed for the manager's lifetime: both are constructor options with no
+   * setter, so this is computed once rather than on every `append()` —
+   * serializing twenty JSON schemas per appended message would be real work
+   * for a value that cannot change.
+   */
+  private readonly overheadTokens: number;
+  /** What is left of `budget` for messages, after the overhead floor. */
+  private readonly messageBudget: number;
   private readonly maxToolResultChars: number;
   private readonly strategy: TruncationStrategy;
 
@@ -165,6 +181,23 @@ export class ConversationManager {
       messages: [],
       ...(options.tools !== undefined ? { tools: options.tools } : {}),
     };
+
+    // 1.8: the system prompt and tool schemas are sent on every request and
+    // no strategy can drop them, so they come off the budget up front rather
+    // than being handed to truncation as if they were negotiable.
+    this.overheadTokens = estimateOverheadTokens(this.context);
+    this.messageBudget = this.budget - this.overheadTokens;
+
+    if (this.messageBudget <= 0) {
+      // A conversation that can never hold a single message is a
+      // configuration error, not a runtime condition — a caller registering
+      // this many tools against this window has nothing to send.
+      throw new Error(
+        `contextWindow (${options.contextWindow}) leaves no room for messages: ` +
+          `a reserve of ${reserve} plus ${this.overheadTokens} tokens of system prompt ` +
+          `and tool schemas already exhausts it.`,
+      );
+    }
   }
 
   /**
@@ -176,7 +209,7 @@ export class ConversationManager {
       message.role === "toolResult" ? capToolResult(message, this.maxToolResultChars) : message;
 
     this.context.messages.push(toAppend);
-    this.context.messages = this.strategy.truncate(this.context.messages, this.budget);
+    this.context.messages = this.strategy.truncate(this.context.messages, this.messageBudget);
   }
 
   /** Convenience for the common case of appending several results at once. */
@@ -193,11 +226,24 @@ export class ConversationManager {
     return this.context;
   }
 
-  /** Current estimated size, against the same heuristic truncation uses. */
+  /**
+   * Current estimated size of the whole Context — messages *and* the system
+   * prompt and tool schemas.
+   *
+   * Comparable against `getBudgetTokens()`. Before 1.8 this counted messages
+   * only, which made the pair incomparable and under-reported every
+   * conversation by the fixed overhead.
+   */
   getEstimatedTokens(): number {
-    return estimateContextTokens(this.context.messages);
+    return estimateContextTokens(this.context.messages) + this.overheadTokens;
   }
 
+  /** The non-message part of the estimate: system prompt plus tool schemas. */
+  getOverheadTokens(): number {
+    return this.overheadTokens;
+  }
+
+  /** contextWindow minus the reserve — the allowance for the whole Context. */
   getBudgetTokens(): number {
     return this.budget;
   }

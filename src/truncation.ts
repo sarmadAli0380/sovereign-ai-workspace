@@ -11,7 +11,7 @@
  * algorithm to implementation time. What follows is that algorithm.
  */
 
-import type { Message, ToolCall } from "@earendil-works/pi-ai";
+import type { Context, Message, ToolCall } from "@earendil-works/pi-ai";
 
 export interface TruncationStrategy {
   /**
@@ -113,6 +113,58 @@ export function estimateTokens(message: Message): number {
 export function estimateContextTokens(messages: readonly Message[]): number {
   let total = 0;
   for (const message of messages) total += estimateTokens(message);
+  return total;
+}
+
+/**
+ * Per-tool cost beyond the tool's own text, for the JSON wrapper each
+ * provider puts around a function definition.
+ *
+ * TUNABLE: 4 by analogy with the per-message constant, not measured
+ * separately.
+ */
+const TOOL_FRAMING_TOKENS = 4;
+
+/**
+ * The tokens a `Context` costs *outside* its message list — the system
+ * prompt and the tool schemas.
+ *
+ * These are sent on every single request and were counted nowhere until
+ * 1.8. `estimateContextTokens` walks messages, and `systemPrompt`/`tools`
+ * are sibling fields on the `Context`, so both the budget check and the
+ * truncation decision were blind to them. Measured against a message list
+ * whose entire content was one 23-token user string
+ * (`phase1/adrs/1.8-token-budgeting.md`):
+ *
+ *   codex reported input   82   (~21 system prompt, ~38 one tool schema)
+ *   ollama reported input  153
+ *
+ * Unlike message content, none of this is truncatable — a strategy cannot
+ * drop a tool the caller registered. So it is a fixed floor charged against
+ * the window, not something handed to a strategy that could not act on it.
+ *
+ * This overestimates, deliberately, in line with the rest of this module's
+ * contract: the `get_weather` schema used in `verify-live` measures ~38
+ * tokens on the wire and is estimated here at ~59. Schemas are JSON, which
+ * is exactly the content chars/3 was measured weakest on, so erring high is
+ * the right direction — an overestimate evicts a message early, an
+ * underestimate blows the window.
+ */
+export function estimateOverheadTokens(
+  context: Pick<Context, "systemPrompt" | "tools">,
+): number {
+  let total = 0;
+
+  if (context.systemPrompt) {
+    total += Math.ceil(context.systemPrompt.length / CHARS_PER_TOKEN) + 4;
+  }
+
+  for (const tool of context.tools ?? []) {
+    const chars =
+      tool.name.length + tool.description.length + JSON.stringify(tool.parameters ?? {}).length;
+    total += Math.ceil(chars / CHARS_PER_TOKEN) + TOOL_FRAMING_TOKENS;
+  }
+
   return total;
 }
 

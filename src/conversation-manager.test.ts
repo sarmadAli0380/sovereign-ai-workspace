@@ -195,3 +195,93 @@ test("REGRESSION: no truncation marker when nothing was actually cut", () => {
   assert.doesNotMatch(textOf(capped), /truncated by harness/);
   assert.equal(capped, message, "an uncut message should be returned unchanged");
 });
+
+// --- 1.8: the system prompt and tool schemas are part of the Context's cost
+
+test("getEstimatedTokens includes the system prompt and tools, not just messages", () => {
+  const options = { contextWindow: 200_000 } as const;
+  const bare = new ConversationManager(options);
+  const equipped = new ConversationManager({
+    ...options,
+    systemPrompt: "You are a concise assistant. Use tools when they are relevant.",
+    tools: [
+      {
+        name: "get_weather",
+        description: "Get the current weather for a city",
+        parameters: Type.Object({ city: Type.String({ description: "The city" }) }),
+      },
+    ],
+  });
+
+  bare.append(user("hello"));
+  equipped.append(user("hello"));
+
+  assert.ok(
+    equipped.getEstimatedTokens() > bare.getEstimatedTokens(),
+    "an identical message list must cost more when a prompt and tools ride along",
+  );
+  assert.equal(
+    equipped.getEstimatedTokens() - bare.getEstimatedTokens(),
+    equipped.getOverheadTokens(),
+  );
+});
+
+test("getEstimatedTokens and getBudgetTokens both cover the whole Context", () => {
+  const cm = new ConversationManager({
+    contextWindow: 8_192,
+    systemPrompt: "s".repeat(300),
+  });
+  cm.append(user("hello"));
+  // Comparable by construction: the estimate is the whole Context, and the
+  // budget is the whole window minus the reserve. Before 1.8 the estimate
+  // counted messages only, so comparing the two under-reported by the
+  // overhead — the exact gap that let a request exceed the window while the
+  // harness reported itself healthy.
+  assert.ok(cm.getEstimatedTokens() < cm.getBudgetTokens());
+  assert.ok(cm.getOverheadTokens() > 0);
+});
+
+test("REGRESSION (1.8): the overhead is charged against the truncation budget", () => {
+  // contextWindow 1000 → reserve 250 → budget 750.
+  // A 1500-char system prompt costs ~504, leaving ~246 for messages.
+  const withPrompt = new ConversationManager({
+    contextWindow: 1_000,
+    systemPrompt: "s".repeat(1_500),
+  });
+  const withoutPrompt = new ConversationManager({ contextWindow: 1_000 });
+
+  // Three ~104-token messages: 312 total. Fits the raw 750 budget, does not
+  // fit once the system prompt has taken its share.
+  for (const cm of [withPrompt, withoutPrompt]) {
+    cm.append(user("m".repeat(300)));
+    cm.append(user("n".repeat(300)));
+    cm.append(user("o".repeat(300)));
+  }
+
+  assert.equal(withoutPrompt.getHistory().length, 3, "control: all three fit the raw budget");
+  assert.ok(
+    withPrompt.getHistory().length < 3,
+    "the same three messages must not fit once the prompt is charged",
+  );
+  assert.ok(withPrompt.getEstimatedTokens() <= withPrompt.getBudgetTokens());
+});
+
+test("constructing with tools that exhaust the window is a config error, not a runtime one", () => {
+  assert.throws(
+    () =>
+      new ConversationManager({
+        contextWindow: 1_000,
+        systemPrompt: "s".repeat(3_000),
+      }),
+    /leaves no room for messages/,
+  );
+});
+
+test("the pre-1.8 window error still fires before the overhead one", () => {
+  // A window too small even before any prompt or tools should still report
+  // the reserve as the cause, not the overhead.
+  assert.throws(
+    () => new ConversationManager({ contextWindow: 0, systemPrompt: "s" }),
+    /too small to hold any messages after a reserve/,
+  );
+});

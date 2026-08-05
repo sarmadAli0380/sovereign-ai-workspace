@@ -1151,6 +1151,17 @@ carries fifteen. And turn 1 is exactly the turn a usage anchor can never
 help with, because no response has arrived. This fix is independent of the
 anchor and should land first.
 
+**Fixed and verified live the same day.** `estimateOverheadTokens()` charges
+the system prompt and tool schemas as a *fixed floor* off the budget rather
+than passing them to truncation — no strategy can drop a tool the caller
+registered, so handing them to one would be theatre. The same `verify-live`
+conversation that estimated 66 tokens against codex's reported ~131 now
+estimates 151: from 2.0× under to 1.15× over, which is the direction this
+module's contract asks for. A window whose reserve plus overhead leaves no
+room for messages now throws at construction — a caller registering that
+many tools has nothing to send, and that is a config error, not a runtime
+condition.
+
 ### An assistant turn's replay cost is not what the harness holds
 
 Two three-turn probes, identical prompts, written to force heavy reasoning

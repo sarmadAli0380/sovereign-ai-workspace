@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { Type } from "@earendil-works/pi-ai";
 import type { AssistantMessage, Message, ToolResultMessage, Usage } from "@earendil-works/pi-ai";
-import { dropOldestStrategy, estimateContextTokens, estimateTokens } from "./truncation.ts";
+import {
+  dropOldestStrategy,
+  estimateContextTokens,
+  estimateOverheadTokens,
+  estimateTokens,
+} from "./truncation.ts";
 
 const usage: Usage = {
   input: 0,
@@ -195,4 +201,63 @@ test("REGRESSION: a conversation of images stays within budget", () => {
   const kept = dropOldestStrategy.truncate(messages, 10_000);
   assert.ok(estimateContextTokens(kept) <= 10_000 || kept.length === 1);
   assert.ok(kept.length < 20, "image-only history must actually be truncated");
+});
+
+// --- 1.8: the Context costs tokens outside its message list
+
+test("estimateOverheadTokens is zero for a Context with neither field", () => {
+  assert.equal(estimateOverheadTokens({}), 0);
+  assert.equal(estimateOverheadTokens({ tools: [] }), 0);
+});
+
+test("estimateOverheadTokens counts the system prompt", () => {
+  const prompt = "You are a concise assistant. Use tools when they are relevant.";
+  const estimate = estimateOverheadTokens({ systemPrompt: prompt });
+  // 62 chars at chars/3, plus the per-item framing constant.
+  assert.equal(estimate, Math.ceil(prompt.length / 3) + 4);
+});
+
+test("estimateOverheadTokens counts a tool's name, description and schema", () => {
+  const bare = estimateOverheadTokens({
+    tools: [{ name: "t", description: "d", parameters: Type.Object({}) }],
+  });
+  const rich = estimateOverheadTokens({
+    tools: [
+      {
+        name: "t",
+        description: "d",
+        parameters: Type.Object({
+          path: Type.String({ description: "An absolute path to the file to read" }),
+        }),
+      },
+    ],
+  });
+  assert.ok(rich > bare, `a real schema must cost more than an empty one (${rich} vs ${bare})`);
+});
+
+test("estimateOverheadTokens scales with the number of tools", () => {
+  const tool = (name: string) => ({ name, description: "d", parameters: Type.Object({}) });
+  const one = estimateOverheadTokens({ tools: [tool("a")] });
+  const three = estimateOverheadTokens({ tools: [tool("a"), tool("b"), tool("c")] });
+  assert.equal(three, one * 3);
+});
+
+test("the get_weather schema is estimated above its measured wire cost", () => {
+  // 1.8 measured this exact tool at ~38 tokens on the wire against codex
+  // (turn-1 input 82, of which ~21 was the system prompt and 23 the user
+  // message). The estimate must land above that: this module's contract is
+  // to overestimate, and JSON schemas are the content chars/3 reads lowest.
+  const estimate = estimateOverheadTokens({
+    tools: [
+      {
+        name: "get_weather",
+        description: "Get the current weather for a city",
+        parameters: Type.Object({
+          city: Type.String({ description: "The city to get weather for" }),
+        }),
+      },
+    ],
+  });
+  assert.ok(estimate > 38, `estimate ${estimate} must exceed the measured 38`);
+  assert.ok(estimate < 38 * 3, `estimate ${estimate} is wastefully high`);
 });
