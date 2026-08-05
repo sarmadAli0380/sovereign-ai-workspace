@@ -1,22 +1,38 @@
-# Sovereign AI Roadmap — Phase 1 Harness
+# Sovereign AI Workspace
 
-## Project state
+## What this project is
+
+**A sovereign AI workspace** — a self-hosted, Claude-app-shaped product a
+client runs entirely inside their own network, with any LLM behind it,
+swappable per client requirement. Read
+`ADR-003-sovereign-workspace-product.md` and `product-roadmap.md` first;
+they are the current framing.
+
+**This changed on 2026-08-05.** Every doc written before that describes a
+*library* — "an abstraction layer that swaps between providers" — and
+1.7 went further and defined the harness's value as *subtraction*. That was
+a mistranslation of the goal. The harness is the product's engine, not the
+deliverable. `00-original-roadmap.md` is kept as history only.
+
+**Built from scratch, deliberately.** Other open-source workspaces are
+reference material for *features* and *how they solved a specific bug* —
+never a source of code or structure. Prefer MIT/Apache projects for close
+reading; for AGPL or restricted ones take the observation, not the shape.
+Cite every borrowing in `findings-log.md`. See ADR-003, Decision 2.
 
 **Phase 1 and Phase 2 are complete and verified against two live
-providers.** This file used to say "100% design, zero code"; that has not
-been true since 2026-08-03. `src/` holds the harness, `scripts/` the
-verification and sizing tools, `phase1/adrs/` and `phase2/adrs/` the
-decided designs behind them.
-
-Those ADRs remain **decided** rather than proposals — don't re-litigate one
-unless you find it factually wrong, and several now carry dated corrections
-where exactly that happened. Phases 3–5 of `00-original-roadmap.md` are
-untouched.
+providers** — roughly 10–15% of the product, and the bottom layer. `src/`
+holds the harness, `scripts/` the verification and sizing tools,
+`phase1/adrs/` and `phase2/adrs/` the decided designs behind them. Those
+ADRs remain **decided** rather than proposals — don't re-litigate one
+unless you find it factually wrong, and several carry dated corrections
+where exactly that happened.
 
 ## Read these first, in order
 
-1. `00-original-roadmap.md` — the full five-phase plan, for context on
-   where Phase 1 fits. Only Phase 1 is in scope right now.
+1. `ADR-003-sovereign-workspace-product.md` then `product-roadmap.md` —
+   what is actually being built, and why the framing changed on
+   2026-08-05. `00-original-roadmap.md` is superseded, kept for history.
 2. `phase1/phase1-model-agnostic-harness-expanded.md` — task-by-task
    breakdown (1.1–1.7), each with a "revised" section pointing at the ADR
    that has the actual decided shape.
@@ -79,7 +95,10 @@ The original per-task briefs, still accurate as intent:
   `ConversationManager` — it returns `ToolResultMessage[]`, it does not
   append them itself.
 - **1.7** — see the section below. The refactor half was retired with
-  evidence; the composition half shipped as `step()`.
+  evidence; the composition half shipped as `step()`. Its *positioning*
+  ("the harness's value is subtraction, don't build an agent loop") is
+  superseded by ADR-003 — correct for a library, wrong for a product.
+  `step()` itself stands, with the agent loop built on top of it.
 
 ## 1.7 is closed — the open question was answered
 

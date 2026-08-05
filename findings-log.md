@@ -1627,6 +1627,86 @@ everyone reads first, will be believed long after it stops being true.**
 
 ---
 
+## The docs described a library; the goal was a product, 2026-08-05
+
+The most consequential correction on this project, and it took asking the
+user what they were actually building. Their words:
+
+> a sovereign harness layer like Claude is, which is fully built by us and
+> has the model agnostic capability — imagine the Claude desktop app but all
+> the data is retained on enterprise servers, not in foreign databases.
+
+Every design doc here describes **a component** — "an abstraction layer that
+swaps between hosted APIs and self-hosted models." 1.7 went further and
+argued the harness's value was *subtraction*, explicitly declining an agent
+loop or a tool suite. All of it internally consistent, all of it building
+the engine and calling it the car.
+
+Nothing in the code was wrong. The *frame* was, and a wrong frame is more
+expensive than a wrong function, because every decision underneath it
+inherits the error. 1.7's "don't build an agent loop" was correct reasoning
+from a false premise.
+
+**Worth generalising:** the docs were never checked against the goal, only
+against each other. Internal consistency is not evidence of correctness —
+it is exactly what a well-maintained misunderstanding looks like.
+
+### The licence survey is worth keeping regardless
+
+Researched forking an existing workspace before the build-from-scratch
+decision:
+
+| project | licence | white-label to a client? |
+|---|---|---|
+| LibreChat | MIT | yes |
+| AnythingLLM | MIT | yes |
+| Jan | Apache-2.0 (GitHub reports NOASSERTION; the file is plain Apache) | yes |
+| Open WebUI | modified BSD-3 | **no** — branding must remain in any deployment |
+| LobeChat | Apache + conditions | **no** — commercial licence to distribute a derivative |
+| Dify | Apache + conditions | **no** — logo cannot be removed from the frontend |
+| odysseus | AGPL-3.0 | source rights pass to the client |
+
+**The three largest by stars — Dify 151k, Open WebUI 148k, odysseus 85k —
+are all unusable for white-labelled client delivery.** Popularity and
+licence suitability are unrelated, and the licence is the first thing to
+check, not the last.
+
+Also measured: AnythingLLM ships **thirty-plus** hand-written provider
+adapters (cerebras, groq, novita, nvidiaNim, koboldCPP …). That is the
+pattern this project has spent weeks proving generates silent failure —
+breadth by adapter count is breadth by places to be quietly wrong.
+
+### The decision, and the reasoning that was rejected
+
+I recommended forking LibreChat: MIT, TypeScript, MERN-shaped, and it
+already carries audit logging (`packages/api/src/admin/auditLog.ts`), RBAC,
+MCP, file upload and pgvector — two of the roadmap's later phases already
+built.
+
+**Rejected by the user, and the reasoning holds:** the differentiator has to
+be ours. A fork means either living with someone else's model layer — the
+exact layer this project exists to be better at — or replacing it and
+diverging from upstream forever.
+
+Build from scratch. Other projects become reference material: take the
+*feature* and the *fix for a specific bug*, never the code or its structure.
+Prefer MIT/Apache for close reading; for AGPL take the observation only.
+Precedent already set — the odysseus usage-delta finding in 1.8 was a fact
+about provider behaviour, cited, with no code moved.
+
+### The differentiator, restated
+
+"Any LLM without flakiness" is not a feature. It is a conformance program,
+and this project already holds its specification: the catalogue of ways
+providers lie, every entry measured. The claim to be able to make is not
+"we support many models" but **"these models are verified, on this date,
+against these checks."**
+
+Recorded in `ADR-003-sovereign-workspace-product.md` and
+`product-roadmap.md`.
+
+---
+
 ## Conceptual framework
 
 Applied a structural-vs-dynamic lens across the roadmap (full breakdown in
