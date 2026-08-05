@@ -1225,6 +1225,37 @@ and the gap widens forever. **The defect is unbounded drift, not per-turn
 inaccuracy** — and per-turn accuracy stays mediocre after the fix, which is
 fine.
 
+**Both stages shipped the same day.** The anchor is applied without touching
+1.5's `TruncationStrategy` contract, which was the part that looked like it
+would need redesigning. A strategy measures the whole message list with the
+heuristic and always has; rather than teach every strategy about anchors,
+the *budget handed to it* is shifted by the difference:
+
+```
+allowed = budget − anchor.tokens + heuristic(anchored prefix)
+```
+
+which reduces exactly to `heuristic(suffix) <= budget − anchor.tokens` for
+as long as the strategy keeps the prefix intact — and if it drops into the
+prefix, the anchor is invalidated anyway. One line of arithmetic in place of
+an interface change.
+
+Verified live on the same `verify-live` conversation:
+
+| | anchored | pure heuristic | provider truth |
+|---|---|---|---|
+| codex | **131** | 151 | 131 |
+| ollama | **730** | 748 | 611 |
+
+Codex lands exactly on the reported number. Both stay on the overestimating
+side, which is the side this module's contract asks for.
+
+One thing worth noting for whoever reads the tests: the only failure during
+implementation was a *test fixture* whose messages never came close to the
+budget it claimed to overrun, so it asserted that truncation had cleared the
+anchor when no truncation had occurred. The code was right and the test was
+wrong — a reminder that a red test is a hypothesis about two things, not one.
+
 ### Two things odysseus contributed
 
 1. **They never made this change.** `trim_for_context()` gates purely on

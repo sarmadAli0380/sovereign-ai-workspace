@@ -40,6 +40,8 @@ export {
   ConversationManager,
   DEFAULT_MAX_TOOL_RESULT_CHARS,
   DEFAULT_RESERVE_TOKENS,
+  type BudgetSource,
+  type BudgetUsage,
   type ConversationManagerOptions,
 } from "./conversation-manager.ts";
 export {

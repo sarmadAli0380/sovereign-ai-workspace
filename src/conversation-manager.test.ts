@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { Type } from "@earendil-works/pi-ai";
-import type { Message, ToolResultMessage, Usage } from "@earendil-works/pi-ai";
+import type { AssistantMessage, Message, ToolResultMessage, Usage } from "@earendil-works/pi-ai";
 import {
   capToolResult,
   ConversationManager,
   DEFAULT_RESERVE_TOKENS,
 } from "./conversation-manager.ts";
-import type { TruncationStrategy } from "./truncation.ts";
+import { estimateContextTokens, type TruncationStrategy } from "./truncation.ts";
 
 const usage: Usage = {
   input: 0,
@@ -284,4 +284,188 @@ test("the pre-1.8 window error still fires before the overhead one", () => {
     () => new ConversationManager({ contextWindow: 0, systemPrompt: "s" }),
     /too small to hold any messages after a reserve/,
   );
+});
+
+// --- 1.8 stage 2: anchoring on a provider-measured input
+
+function assistantWithUsage(text: string, input: number): AssistantMessage {
+  return {
+    role: "assistant",
+    content: [{ type: "text", text }],
+    api: "faux",
+    provider: "faux",
+    model: "m",
+    usage: { ...usage, input, totalTokens: input },
+    stopReason: "stop",
+    timestamp: 1,
+  };
+}
+
+test("a response with usage anchors the estimate", () => {
+  const cm = new ConversationManager({ contextWindow: 200_000 });
+  cm.append(user("hello"));
+  assert.equal(cm.getBudgetUsage().source, "estimated");
+
+  cm.append(assistantWithUsage("hi", 900));
+  const anchored = cm.getBudgetUsage();
+  assert.equal(anchored.source, "anchored");
+  // 900 measured for everything before the assistant turn, plus the
+  // heuristic over the assistant turn itself.
+  assert.equal(anchored.tokens, 900 + estimateContextTokens([assistantWithUsage("hi", 900)]));
+});
+
+test("the anchored estimate ignores the heuristic's view of the anchored prefix", () => {
+  const cm = new ConversationManager({ contextWindow: 200_000 });
+  // A huge first message whose heuristic weight is nothing like what the
+  // provider charged — the qwen3:4b case, where thinking is counted here and
+  // never replayed on the wire.
+  cm.append(user("q".repeat(30_000)));
+  const heuristicOnly = cm.getEstimatedTokens();
+  cm.append(assistantWithUsage("ok", 125));
+
+  const anchored = cm.getBudgetUsage();
+  assert.equal(anchored.source, "anchored");
+  assert.ok(
+    anchored.tokens < heuristicOnly / 10,
+    `anchored ${anchored.tokens} must reflect the measured 125, not the heuristic ${heuristicOnly}`,
+  );
+});
+
+test("the anchor does not double-count the system prompt and tools", () => {
+  // A measured input already includes them, so they must not be added again.
+  const cm = new ConversationManager({
+    contextWindow: 200_000,
+    systemPrompt: "s".repeat(3_000),
+  });
+  cm.append(user("hello"));
+  const assistantMessage = assistantWithUsage("hi", 500);
+  cm.append(assistantMessage);
+
+  assert.equal(
+    cm.getBudgetUsage().tokens,
+    500 + estimateContextTokens([assistantMessage]),
+    "overhead is inside the measured 500 and must not be charged twice",
+  );
+});
+
+test("zero reported input counts as no measurement, not a measurement of zero", () => {
+  const cm = new ConversationManager({ contextWindow: 200_000 });
+  cm.append(user("hello"));
+  cm.append(assistantWithUsage("hi", 0));
+  assert.equal(cm.getBudgetUsage().source, "estimated");
+});
+
+test("a silent response does not clear the anchor, it just fails to advance it", () => {
+  const cm = new ConversationManager({ contextWindow: 200_000 });
+  cm.append(user("hello"));
+  cm.append(assistantWithUsage("hi", 900));
+  const afterAnchor = cm.getBudgetUsage();
+
+  cm.append(user("again"));
+  cm.append(assistantWithUsage("no usage this time", 0));
+
+  const afterSilence = cm.getBudgetUsage();
+  assert.equal(afterSilence.source, "anchored", "one silent turn must not discard a measurement");
+  assert.ok(
+    afterSilence.tokens > afterAnchor.tokens,
+    "the estimated span widens by the turns since the anchor",
+  );
+});
+
+test("truncation invalidates the anchor", () => {
+  const cm = new ConversationManager({ contextWindow: 1_200 });
+  cm.append(user("a".repeat(600)));
+  cm.append(assistantWithUsage("ok", 200));
+  assert.equal(cm.getBudgetUsage().source, "anchored");
+
+  // Enough to force eviction of the anchored prefix: budget is 900 and the
+  // anchor allows ~904 heuristic tokens, so one 3000-char message (~1004)
+  // overruns it on its own.
+  cm.append(user("b".repeat(3_000)));
+
+  assert.equal(
+    cm.getBudgetUsage().source,
+    "estimated",
+    "an anchor describing dropped messages must not survive",
+  );
+});
+
+test("the anchor tightens the truncation budget when the heuristic ran low", () => {
+  // The codex case: the harness's record of a turn understates what the
+  // provider actually charged, so an anchored conversation must evict
+  // sooner than the heuristic alone would.
+  const build = (anchorTokens: number | undefined) => {
+    const cm = new ConversationManager({ contextWindow: 4_000 });
+    cm.append(user("a".repeat(900)));
+    cm.append(
+      anchorTokens === undefined
+        ? assistantWithUsage("ok", 0)
+        : assistantWithUsage("ok", anchorTokens),
+    );
+    cm.append(user("b".repeat(900)));
+    cm.append(user("c".repeat(900)));
+    return cm;
+  };
+
+  const unanchored = build(undefined);
+  const anchored = build(2_800);
+
+  assert.ok(
+    anchored.getHistory().length < unanchored.getHistory().length,
+    `a measured 2800 must evict more than the heuristic did ` +
+      `(${anchored.getHistory().length} vs ${unanchored.getHistory().length})`,
+  );
+});
+
+test("the anchor loosens the truncation budget when the heuristic ran high", () => {
+  // The qwen case: 30k characters the harness counts and the server never
+  // replays. A measured input proves the room exists.
+  const build = (anchorTokens: number) => {
+    const cm = new ConversationManager({ contextWindow: 4_000 });
+    cm.append(user("a".repeat(9_000)));
+    cm.append(assistantWithUsage("ok", anchorTokens));
+    cm.append(user("b".repeat(900)));
+    return cm;
+  };
+
+  const unanchored = build(0);
+  const anchored = build(120);
+
+  assert.ok(
+    anchored.getHistory().length > unanchored.getHistory().length,
+    `a measured 120 must keep more than a 3000-token heuristic guess ` +
+      `(${anchored.getHistory().length} vs ${unanchored.getHistory().length})`,
+  );
+});
+
+test("PROPERTY: anchored error stays bounded by one turn, unanchored error compounds", () => {
+  // The qwen probe in miniature: every assistant turn carries thinking the
+  // harness counts and the wire never replays, so the heuristic drifts
+  // further from truth with every turn while the anchor re-bases each time.
+  const cm = new ConversationManager({ contextWindow: 200_000 });
+  const REAL = [75, 125, 160]; // measured inputs from the probe
+
+  let worstAnchoredError = 0;
+  for (const [turn, measured] of REAL.entries()) {
+    cm.append(user("ask something".repeat(3)));
+    // A turn whose recorded content is ~1000 tokens but costs `measured`.
+    cm.append(assistantWithUsage("t".repeat(3_000), measured));
+
+    const anchoredError = Math.abs(cm.getBudgetUsage().tokens - measured);
+    worstAnchoredError = Math.max(worstAnchoredError, anchoredError);
+
+    const pureHeuristic = estimateContextTokens(cm.getHistory()) + cm.getOverheadTokens();
+    const heuristicError = Math.abs(pureHeuristic - measured);
+
+    if (turn > 0) {
+      assert.ok(
+        heuristicError > anchoredError,
+        `turn ${turn}: the pure heuristic must be further from truth than the anchor`,
+      );
+    }
+  }
+
+  // One turn's delta, not three turns' worth: ~1000 tokens of recorded
+  // content per turn, so a bound of 2000 proves it is not accumulating.
+  assert.ok(worstAnchoredError < 2_000, `anchored error grew to ${worstAnchoredError}`);
 });

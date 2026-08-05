@@ -74,6 +74,60 @@ export function resolveReserveTokens(
   return Math.min(requested, Math.floor(contextWindow * MAX_RESERVE_FRACTION));
 }
 
+/**
+ * Where the current size number came from.
+ *
+ * `"anchored"` means it is built on a token count the provider actually
+ * measured; `"estimated"` means it is entirely the chars/3 heuristic. 1.8
+ * requires this to be visible rather than buried — the two have very
+ * different error characteristics, and a caller debugging an unexpected
+ * truncation needs to know which one it got.
+ */
+export type BudgetSource = "anchored" | "estimated";
+
+export interface BudgetUsage {
+  tokens: number;
+  source: BudgetSource;
+}
+
+/**
+ * A provider-measured input size, and the message it was measured at.
+ *
+ * `tokens` covers the system prompt, the tools, and every message *before*
+ * `messageIndex` — that is exactly the request that produced the assistant
+ * message now sitting at `messageIndex`.
+ */
+interface UsageAnchor {
+  tokens: number;
+  messageIndex: number;
+}
+
+/**
+ * The anchor a message provides, or `undefined` if it provides none.
+ *
+ * Zero input counts as *no measurement*, not as a measurement of zero: a
+ * non-empty request cannot cost nothing, so a zero means the provider (or
+ * the transport) did not report. `odysseus` reached the same rule from the
+ * other direction, emitting a usage event only when a count is non-zero
+ * after shipping a bug where usage riding on a non-empty finish delta was
+ * silently dropped.
+ *
+ * Cache fields are added because they are input-side tokens the server
+ * holds. Every measurement taken so far reported them as 0, so this is
+ * arithmetic that has not yet been exercised — but omitting them would
+ * understate the context on a provider that reports cached input outside
+ * `input`, and understating is the dangerous direction.
+ */
+function anchorFrom(message: Message, messageIndex: number): UsageAnchor | undefined {
+  if (message.role !== "assistant") return undefined;
+  const usage = message.usage;
+  if (!usage || usage.input <= 0) return undefined;
+  return {
+    tokens: usage.input + (usage.cacheRead ?? 0) + (usage.cacheWrite ?? 0),
+    messageIndex,
+  };
+}
+
 export interface ConversationManagerOptions {
   systemPrompt?: string;
   tools?: Context["tools"];
@@ -157,6 +211,13 @@ export class ConversationManager {
   private readonly messageBudget: number;
   private readonly maxToolResultChars: number;
   private readonly strategy: TruncationStrategy;
+  /**
+   * The most recent provider-measured input size, if there is one.
+   *
+   * Undefined until a response reports usage, and again after any
+   * truncation — see `append()`.
+   */
+  private anchor: UsageAnchor | undefined;
 
   constructor(options: ConversationManagerOptions) {
     // Scaled down for small windows — an explicit `reserveTokens` is still
@@ -208,8 +269,60 @@ export class ConversationManager {
     const toAppend =
       message.role === "toolResult" ? capToolResult(message, this.maxToolResultChars) : message;
 
-    this.context.messages.push(toAppend);
-    this.context.messages = this.strategy.truncate(this.context.messages, this.messageBudget);
+    const previous = this.context.messages;
+    previous.push(toAppend);
+
+    // Anchor before truncating: this measurement describes a request that
+    // has already gone out, so it is a fact about the past regardless of
+    // what truncation is about to do to the future. A response that carries
+    // no usable usage does NOT clear the anchor — it simply fails to
+    // advance it, and the estimated span widens by one turn. Usage absence
+    // is a per-response transport event, not a provider losing the ability
+    // to report.
+    const anchored = anchorFrom(toAppend, previous.length - 1);
+    if (anchored) this.anchor = anchored;
+
+    const kept = this.strategy.truncate(previous, this.truncationBudget());
+
+    // Truncation invalidates the anchor: its token count covered messages
+    // that are no longer here, so it now describes a conversation that does
+    // not exist. Reducing it correctly is possible but fiddly and easy to
+    // get subtly wrong; dropping it is conservative and self-healing, since
+    // the very next response re-anchors.
+    if (kept.length !== previous.length || kept[0] !== previous[0]) {
+      this.anchor = undefined;
+    }
+
+    this.context.messages = kept;
+  }
+
+  /**
+   * The budget handed to the truncation strategy, in the strategy's own
+   * units.
+   *
+   * A strategy measures the whole message list with the heuristic (1.5's
+   * contract, unchanged). When an anchor exists, the prefix it covers has a
+   * *measured* cost that the heuristic will get wrong — so rather than
+   * change the strategy interface, the budget is shifted by the difference:
+   * give back whatever heuristic weight the anchored prefix carries, and
+   * take away what it actually cost.
+   *
+   *   allowed = budget − anchor.tokens + heuristic(anchored prefix)
+   *
+   * The strategy then enforces `heuristic(kept) <= allowed`, which reduces
+   * exactly to `heuristic(suffix) <= budget − anchor.tokens` — the
+   * condition we want — for as long as it keeps the prefix intact. If it
+   * drops into the prefix, the anchor is invalidated above and the next
+   * turn re-derives everything.
+   *
+   * Note `this.budget`, not `this.messageBudget`: the anchor is a measured
+   * *request* size, so the system prompt and tool schemas are already
+   * inside it. Subtracting the overhead again would double-charge it.
+   */
+  private truncationBudget(): number {
+    if (!this.anchor) return this.messageBudget;
+    const prefix = estimateContextTokens(this.context.messages.slice(0, this.anchor.messageIndex));
+    return Math.max(0, this.budget - this.anchor.tokens + prefix);
   }
 
   /** Convenience for the common case of appending several results at once. */
@@ -227,15 +340,43 @@ export class ConversationManager {
   }
 
   /**
-   * Current estimated size of the whole Context — messages *and* the system
-   * prompt and tool schemas.
+   * Current size of the whole Context — messages *and* the system prompt
+   * and tool schemas — anchored on a measured count where one is available.
    *
    * Comparable against `getBudgetTokens()`. Before 1.8 this counted messages
    * only, which made the pair incomparable and under-reported every
    * conversation by the fixed overhead.
    */
   getEstimatedTokens(): number {
-    return estimateContextTokens(this.context.messages) + this.overheadTokens;
+    return this.getBudgetUsage().tokens;
+  }
+
+  /**
+   * The same number, with its provenance.
+   *
+   * Anchored: a provider-measured input plus the heuristic over only what
+   * has been appended since. The heuristic's error then applies to one
+   * turn's delta instead of compounding over the whole history — which is
+   * the actual defect 1.8 fixes. Per-turn accuracy stays mediocre
+   * (measured: −38 tokens on codex, +1046 on qwen3:4b) and that is fine,
+   * because the next response re-anchors on truth.
+   *
+   * Estimated: the pure heuristic over everything, which is what the whole
+   * conversation used to get.
+   */
+  getBudgetUsage(): BudgetUsage {
+    if (!this.anchor) {
+      return {
+        tokens: estimateContextTokens(this.context.messages) + this.overheadTokens,
+        source: "estimated",
+      };
+    }
+    return {
+      tokens:
+        this.anchor.tokens +
+        estimateContextTokens(this.context.messages.slice(this.anchor.messageIndex)),
+      source: "anchored",
+    };
   }
 
   /** The non-message part of the estimate: system prompt plus tool schemas. */

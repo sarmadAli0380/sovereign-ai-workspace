@@ -15,6 +15,7 @@ were reversed.
 | Phase | State |
 |---|---|
 | 1.1–1.7 | **Done.** Built, tested, verified against two live providers. |
+| 1.8 token budgeting | **Done.** `1.8-token-budgeting.md`, both stages, verified live. |
 | 2.1 model families | Done — `phase2/adrs/2.1-model-families.md` |
 | 2.2 inference engines | Done — `2.2-inference-engines.md` |
 | 2.3 quantization | Done — `2.3-quantization.md` |
@@ -27,7 +28,7 @@ code changes — different API surfaces, same code, only the configKey
 differs. That was Phase 1's project goal and it needed Phase 2's local
 model to demonstrate.
 
-123 tests, `tsc --noEmit` clean.
+142 tests, `tsc --noEmit` clean.
 
 ---
 
@@ -36,7 +37,7 @@ model to demonstrate.
 ```bash
 cd ~/Desktop/sovereign-ai-roadmap
 
-npm test                                            # 101 tests
+npm test                                            # 142 tests
 npx tsc --noEmit                                    # typecheck
 
 node scripts/verify-live.ts codex-default           # cloud, full tool round trip
@@ -149,29 +150,17 @@ context (148,480 B/token on qwen3:4b) right up until it isn't.
 
 ## What to work on next, in order
 
-### 1. Token budgeting (recommended starting point)
+### 1. Smaller open items
 
-**Designed and measured, not yet implemented** —
-`phase1/adrs/1.8-token-budgeting.md` has the decisions and the evidence.
-The handoff used to call this "transcription, not design". Probing it found
-a second, unrelated defect and disproved the obvious form of the fix, so
-read the ADR before starting.
-
-Two changes, in this order:
-
-1. **`estimateContextTokens` must count `systemPrompt` and `tools`.** They
-   sit on the `Context` as sibling fields and are sent on every request, and
-   neither the budget nor truncation has ever counted them. Measured: a
-   23-token message list reported as an 82-token input on codex, 153 on
-   ollama. Provider-independent, strictly correct, land it first.
-2. **Anchor on `prev.in`** — the measured size of what was actually sent —
-   and estimate only the messages appended since. Not `prev.in + prev.out`:
-   that was measured at 11–13× too high on qwen, because reasoning tokens
-   are billed but not replayed. The win is that error stops compounding, not
-   that any single turn gets accurate.
-
-### 2. Smaller open items
-
+- **1.8's remaining item:** the anchor adds `input + cacheRead + cacheWrite`,
+  but every measurement so far reported both cache fields as 0, so that
+  arithmetic has never been exercised. Needs a provider that actually
+  caches. Understating the context is the dangerous direction, which is why
+  they are included rather than deferred.
+- Reasoning **replay** is shape-dependent and uncharacterised: qwen dropped
+  3106 chars of thinking on a plain turn and appears to replay it across a
+  tool-call continuation. The `prev.in` anchor is deliberately built not to
+  care, but it is worth knowing.
 - `thinkingFormat` — `qwen3:4b` reports a `thinking` capability; pi-ai's
   compat offers `"qwen"` / `"qwen-chat-template"` against a default of
   `"openai"`. We may be leaving capability unused. Not blocking.
@@ -183,7 +172,7 @@ Two changes, in this order:
   and 2.4's calculator already takes `kvCacheBits`, but it needs a server
   restart to test and its quality cost is unmeasured.
 
-### 3. Phase 3 — infra & deployment
+### 2. Phase 3 — infra & deployment
 
 Docker, compose, on-prem vs private cloud. The roadmap says this is where
 most of the real time goes.

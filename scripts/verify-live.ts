@@ -20,6 +20,7 @@ import { getModels, loadModel } from "../src/load-model.ts";
 import { complete } from "../src/complete.ts";
 import { validateContext } from "../src/validate-context.ts";
 import { ConversationManager } from "../src/conversation-manager.ts";
+import { estimateContextTokens } from "../src/truncation.ts";
 import { ToolRegistry, dispatchToolCalls } from "../src/tool-registry.ts";
 import type { HarnessResult } from "../src/types.ts";
 
@@ -180,12 +181,23 @@ const failures = [
 
 console.log(`\n=== summary ===`);
 console.log(`messages in context: ${conversation.getHistory().length}`);
-// The overhead is broken out because it is the part 1.8 found the budget was
-// blind to, and the part no truncation strategy can ever reclaim.
+// 1.8 requires the anchored and pure-heuristic numbers side by side, so the
+// anchor's accuracy stays a measurement rather than an assumption. The
+// overhead is broken out too: it is the part the budget used to be blind to,
+// and the part no truncation strategy can ever reclaim.
+const budget = conversation.getBudgetUsage();
+const heuristic =
+  estimateContextTokens(conversation.getHistory()) + conversation.getOverheadTokens();
 console.log(
-  `estimated tokens:    ${conversation.getEstimatedTokens()} / ${conversation.getBudgetTokens()} budget` +
-    ` (${conversation.getOverheadTokens()} of it system prompt + tool schemas)`,
+  `context tokens:      ${budget.tokens} / ${conversation.getBudgetTokens()} budget (${budget.source})`,
 );
+console.log(
+  `  pure heuristic:    ${heuristic}` +
+    (budget.source === "anchored"
+      ? `  (anchor moved it by ${budget.tokens - heuristic >= 0 ? "+" : ""}${budget.tokens - heuristic})`
+      : ""),
+);
+console.log(`  of which overhead: ${conversation.getOverheadTokens()} (system prompt + tool schemas)`);
 console.log(`tool call round-trip: ${toolCalls.length > 0 ? "exercised" : "NOT exercised (model did not call the tool)"}`);
 
 if (failures.length > 0) {
