@@ -1010,6 +1010,113 @@ not affect it.
 
 ---
 
+## 2.4 — sizing math, measured rather than extrapolated, 2026-08-05
+
+The last unverified assumption in shipped work. 2.5 shipped a KV-cache
+table marked `[UNVERIFIED]` that extrapolated linearly from one data point.
+Measured properly: `phase2/adrs/2.4-gpu-sizing-math.md`, implemented in
+`src/sizing.ts` with the measurements pinned as regression fixtures.
+
+### Memory is *exactly* linear in context — until it isn't
+
+Sweeping `num_ctx` on `qwen3:4b` and reading `/api/ps`, every consecutive
+interval had an identical slope of **148,480 B/token**. Not approximately
+linear — identically, across six points from 1024 to 12288.
+
+The interesting part is where it stops. At 14336 `size_vram < size`: layers
+spilled to CPU, and total allocation jumped *above* the linear prediction,
+because a split allocates on both sides. So the useful output of a sizing
+calculation is not a number, it is **a number plus whether it fits** —
+which is why `sizing.ts` ships `fitsIn()` next to `estimateMemory()`.
+
+### The formula, and the field that makes it wrong
+
+```
+kvPerToken = layers × kvHeads × (keyDim + valueDim) × kvCacheBytes
+```
+
+`kvHeads`, **not** `heads`. `qwen3:4b` has 32 query heads and 8 KV heads;
+grouped-query attention caches only the latter, so using `head_count`
+overstates the cache 4×. Nearly every modern model is GQA, so this is the
+default way the calculation goes wrong. There is a test asserting the 4×
+gap so nobody "fixes" it later.
+
+Verified against llama.cpp's own allocation log rather than inferred from
+the slope:
+
+```
+llama_kv_cache: size = 1152.00 MiB (4096 cells, 36 layers, 2/2 seqs),
+                K (f16): 576.00 MiB, V (f16): 576.00 MiB
+```
+
+1152 MiB ÷ 2 seqs ÷ 4096 = 147,456 B/token = `36 × 8 × 256 × 2`, exactly.
+
+### Validating against a second family, not just a second point
+
+A formula fitted to one model is a curve fit. Pulled `llama3.2:3b`
+(28 layers, `llama` architecture) as a genuine generalisation test, with
+the prediction written down first: KV of 114,688 B/token, and — since qwen
+showed a 1024 B/token gap above the formula — a measured slope of 115,712
+if that gap is per-token, or 115,484 if it is per-layer-per-token.
+
+Measured: **115,712 on all three intervals.** Per-token, architecture
+independent. Worst-case total error across both models, 0.41%.
+
+### Three things the measurements corrected
+
+1. **2.5's KV table ran ~15% high** throughout, because dividing a single
+   data point folds the fixed overhead into the per-token rate. Corrected in
+   place. Every *conclusion* survived — the errors were in the constant, not
+   the reasoning. It also called 16384 "tight" when it is in fact past the
+   spill boundary on this machine.
+2. **`Q4_K_M` is ~5.0 bits/weight, not the ~4.8 usually quoted.** Measured
+   from two real files: 4.97 and 5.03. K-quants keep embedding and output
+   tensors at higher precision, so the effective rate climbs as vocabulary
+   grows relative to parameters — which is exactly the small-model case. The
+   quoted figure is closer to right on a 70B.
+3. **`/api/ps` `size` is a projection, not a measurement.** It is the same
+   number llama.cpp prints *before* allocating. Checked once against the OS:
+   `llama-server` RSS 3530 MiB against a 3606 MiB projection, so it runs
+   2.1% high. Fine to predict — admission decisions are made on the
+   projection — but it should not be quoted as resident memory.
+
+### Concurrency is the term clients will miss
+
+Tested by starting a *second* Ollama on port 11435 with
+`OLLAMA_NUM_PARALLEL=2`, leaving the primary server alone. 2 sequences ×
+4096 came out within 0.1% of 1 sequence × 8192. Total cells is what costs
+memory; how they split between concurrency and window length is free.
+
+This is invisible in single-user testing. A box that comfortably serves one
+8k session serves eight of them at 8× the cache.
+
+### The ceiling is not a property of the machine
+
+llama.cpp logs its own admission rule:
+
+```
+projected to use 3606 MiB of device memory vs 5460 MiB of free device memory
+will leave 1854 >= 1024 MiB of free device memory, no changes needed
+```
+
+The budget is **free** memory, not installed memory, **minus a 1 GiB
+reserve the runtime will not spend**. On unified memory every other process
+draws from the same pool, so the 12288-fits/14336-spills boundary measured
+here is where it fell with that desktop open — not a constant. Sizing
+against installed memory overstates capacity twice over.
+
+### Failed predictions
+
+- **Wrong:** expected the measured slope to sit a few percent off the
+  architectural formula with noise, requiring a fitted coefficient. It came
+  out exact and integral, which is a stronger result than expected — the
+  formula needed no fitting at all.
+- **Wrong:** expected `Q4_K_M` to measure near 4.8 bits/weight. Both models
+  came in at ~5.0, for a reason that only shows up on small models.
+- **Right:** the 1024 B/token overhead is fixed per token, not per layer.
+
+---
+
 ## Conceptual framework
 
 Applied a structural-vs-dynamic lens across the roadmap (full breakdown in
@@ -1065,6 +1172,12 @@ usually resolves the design.
   provider (implemented, not yet run — blocked on OAuth re-authorization).
 - `scripts/verify-swap.ts` — 1.4's swap DoD: same prompt through two config
   keys, structural diff (implemented, not yet run — same blocker).
+- `phase2/adrs/2.4-gpu-sizing-math.md` — 2.4: the memory formula, measured
+  across two model families, with the fit boundary and concurrency term.
+- `src/sizing.ts` + `src/sizing.test.ts` — the formula as code, with every
+  measurement pinned as a regression fixture so the numbers cannot rot.
+- `scripts/size-model.ts` — sizing CLI. Reads geometry from a live Ollama,
+  or takes it as flags for hardware nobody here owns.
 - `1.7-integration-and-comparison.md` — 1.7 reframed: `local-pi` has no
   provider code to remove and sits above this harness, so the refactor was
   retired in favour of the swap proof plus a comparison of where each layer

@@ -1,8 +1,8 @@
 # Session handoff — Sovereign AI Roadmap
 
-**Last updated:** 2026-08-04
+**Last updated:** 2026-08-05
 **Repo:** `~/Desktop/sovereign-ai-roadmap`
-**State:** Phase 1 complete and verified live. Phase 2 substantially complete.
+**State:** Phase 1 complete and verified live. Phase 2 complete.
 
 Read `CLAUDE.md` first, then this, then `findings-log.md`. The findings log
 is long but it is the "why" behind every decision, including several that
@@ -18,7 +18,7 @@ were reversed.
 | 2.1 model families | Done — `phase2/adrs/2.1-model-families.md` |
 | 2.2 inference engines | Done — `2.2-inference-engines.md` |
 | 2.3 quantization | Done — `2.3-quantization.md` |
-| 2.4 sizing math | **NOT STARTED** — the only missing Phase 2 doc |
+| 2.4 sizing math | Done — `2.4-gpu-sizing-math.md`, measured, shipped as code |
 | 2.5 local integration | Done — `2.5-local-provider-integration.md`, running |
 
 **The headline result:** the harness swaps between a cloud API
@@ -27,8 +27,7 @@ code changes — different API surfaces, same code, only the configKey
 differs. That was Phase 1's project goal and it needed Phase 2's local
 model to demonstrate.
 
-101 tests, `tsc --noEmit` clean. Three commits: `b2d58c6`, `465b8c0`,
-`cded2dd`.
+123 tests, `tsc --noEmit` clean.
 
 ---
 
@@ -43,6 +42,8 @@ npx tsc --noEmit                                    # typecheck
 node scripts/verify-live.ts codex-default           # cloud, full tool round trip
 node scripts/verify-live.ts local-qwen              # local model
 node scripts/verify-swap.ts codex-default local-qwen  # cross-provider swap
+
+node scripts/size-model.ts --model qwen3:4b --budget 5.7   # 2.4 sizing
 ```
 
 `HARNESS_TRANSPORT=sse` is **no longer needed** — transport moved into
@@ -128,26 +129,18 @@ Apple M3, **8 GB**. This invalidates the roadmap's "7–13B" target — 4B is
 the honest ceiling. vLLM is unavailable entirely (CUDA-only). Document
 larger deployments as math rather than running them.
 
+And the ceiling is not fixed: 2.4 measured `qwen3:4b` fitting fully at
+12288 context and spilling to CPU at 14336, with the boundary set by *free*
+memory at load time, not installed memory. The runtime also reserves 1 GiB
+it will not spend. `node scripts/size-model.ts --model <tag> --budget <free
+GB>` answers this rather than guessing — memory is exactly linear in
+context (148,480 B/token on qwen3:4b) right up until it isn't.
+
 ---
 
 ## What to work on next, in order
 
-### 1. 2.4 — sizing math (recommended starting point)
-
-The only missing Phase 2 doc and the one with direct client value ("size
-hardware without guessing"). It is also the **last unverified assumption in
-shipped work**: the KV-cache table in `2.5-local-provider-integration.md`
-assumes linear scaling and says so.
-
-It just became measurable. Baseline already captured: `qwen3:4b` at 4096
-context = **3.17 GB**, of which ~2.5 GB is weights, so ≈0.16 MB/token.
-Measure at several context lengths via `OLLAMA_CONTEXT_LENGTH` + `/api/ps`
-and derive the real curve instead of extrapolating from one point.
-
-Should produce a formula usable for a client's GPU box, covering model size
-× quantization, KV cache vs context length, and concurrency.
-
-### 2. Token budgeting — the Codex hybrid
+### 1. Token budgeting — the Codex hybrid (recommended starting point)
 
 Known-wrong code. `ConversationManager` re-estimates the whole conversation
 with a chars/3 heuristic measured to underestimate code by ~1.37×.
@@ -162,7 +155,7 @@ currently thrown away for budgeting.
 
 This is transcription, not design.
 
-### 3. Smaller open items
+### 2. Smaller open items
 
 - `thinkingFormat` — `qwen3:4b` reports a `thinking` capability; pi-ai's
   compat offers `"qwen"` / `"qwen-chat-template"` against a default of
@@ -171,8 +164,11 @@ This is transcription, not design.
   against `/api/ps`, and test that `maxTokens` actually bounds output.
 - Cross-provider swap is proven; **Anthropic-vs-OpenAI-Platform structural
   diff (1.3) never ran** and needs vendor API keys. May stay closed.
+- KV cache quantization (`OLLAMA_KV_CACHE_TYPE=q8_0`) halves the cache term
+  and 2.4's calculator already takes `kvCacheBits`, but it needs a server
+  restart to test and its quality cost is unmeasured.
 
-### 4. Phase 3 — infra & deployment
+### 3. Phase 3 — infra & deployment
 
 Docker, compose, on-prem vs private cloud. The roadmap says this is where
 most of the real time goes.

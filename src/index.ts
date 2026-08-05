@@ -56,3 +56,21 @@ export {
   ToolRegistry,
   type ToolHandler,
 } from "./tool-registry.ts";
+
+// 2.4 — memory sizing. Not part of the inference path; it is arithmetic
+// over model metadata, used to decide what a given box can serve.
+export {
+  BITS_PER_WEIGHT,
+  DEVICE_MEMORY_RESERVE_BYTES,
+  estimateMemory,
+  fitsIn,
+  FIXED_OVERHEAD_BYTES,
+  gb,
+  kvBytesPerToken,
+  maxContextFor,
+  RUNTIME_BYTES_PER_TOKEN,
+  type FitVerdict,
+  type ModelGeometry,
+  type SizingEstimate,
+  type SizingInput,
+} from "./sizing.ts";
