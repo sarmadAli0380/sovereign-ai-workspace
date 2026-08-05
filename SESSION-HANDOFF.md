@@ -164,11 +164,24 @@ context (148,480 B/token on qwen3:4b) right up until it isn't.
 
 ### 1. Smaller open items
 
-- **1.8's remaining item:** the anchor adds `input + cacheRead + cacheWrite`.
-  The gate in front of it used to test `input` alone and threw the
-  measurement away on a fully cached request — fixed — but no measurement
-  here has ever reported a non-zero cache field, so the sum itself is still
-  unexercised against a genuinely caching provider.
+- **1.8's cache arithmetic — not a gap, a floor.** The anchor adds
+  `input + cacheRead + cacheWrite`, and every measurement here has reported
+  both cache fields as 0. That is *expected*, not missing: OpenAI prompt
+  caching only engages at **≥1,024 tokens**, and the conversations this repo
+  runs measure 131 (codex) to 950 (ollama). Nothing to hunt for.
+
+  The sum itself is now derived rather than guessed — the docs confirm
+  cached tokens are a subset of the prompt, and pi-ai reports
+  `input = max(0, prompt_tokens − cacheRead − cacheWrite)`, so the three
+  add back to exactly `prompt_tokens`. Still unobserved above the floor.
+
+  pi-ai already carries the knobs as compat flags — `cacheControl`,
+  `promptCacheOptions`, `promptCacheRetention`, and `prompt_cache_key` via
+  `sessionId` — so enabling any of it stays a config edit. Note GPT-5.6+
+  bills cache *writes* at 1.25× uncached, so turning it on below the floor
+  is strictly a loss. And this is platform-API documentation: our
+  `openai-codex` entry uses the ChatGPT subscription endpoint, which is
+  known to reject parameters the platform accepts. Probe before believing.
 - Reasoning **replay** is shape-dependent and uncharacterised: qwen dropped
   3106 chars of thinking on a plain turn and appears to replay it across a
   tool-call continuation. The `prev.in` anchor is deliberately built not to

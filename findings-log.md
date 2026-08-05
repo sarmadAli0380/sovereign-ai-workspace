@@ -1455,6 +1455,94 @@ That is the "headline result" of this project running untested.
 
 ---
 
+## Prompt caching: a floor, a derivation, and a tension, 2026-08-05
+
+Read OpenAI's prompt-caching guide against our design. Three things came
+out of it, none of which required writing code.
+
+### The zero cache fields were never a gap
+
+`SESSION-HANDOFF.md` listed "the anchor's `cacheRead`/`cacheWrite`
+arithmetic has never been exercised" as an open item, phrased as though a
+capability were missing. It isn't: **caching engages only at ≥1,024
+tokens**, and every conversation this repo runs measures 131 (codex) to 950
+(ollama). The fields read zero because they had to.
+
+Worth correcting rather than leaving, because "unexercised arithmetic"
+invites the next person to go hunting for a bug that does not exist. An
+open item should say what would change the answer — here, a prompt above
+the floor.
+
+### The anchor sum is derivable, not just defensive
+
+The cache fields were added to the anchor on a safety argument: omitting
+them would understate the context if a provider reported cached input
+outside `input`, and understating is the dangerous direction. The docs turn
+that into arithmetic. Cached tokens are a **subset of the prompt**, and
+pi-ai normalises `input = max(0, prompt_tokens − cacheRead − cacheWrite)`.
+So:
+
+```
+input + cacheRead + cacheWrite  =  prompt_tokens
+```
+
+which is exactly the quantity the anchor wants. It also confirms the QA
+finding was a live defect rather than a theoretical one: gating on `input`
+alone discards the measurement precisely when a prompt crosses 1,024 tokens
+and starts hitting cache — the point at which the anchor matters most.
+
+### Drop-oldest truncation is the strategy most hostile to caching
+
+The one genuinely new consequence, now recorded in `1.5`. Caching keys on
+an **identical prefix**; `dropOldestStrategy` removes from the front of the
+message list. Every eviction invalidates the cached prefix past the point
+where messages begin.
+
+It survives only because of a structural accident worth naming:
+`systemPrompt` and `tools` sit on the `Context` as sibling fields rather
+than in `messages`, so they are untruncatable and stay byte-identical.
+Providers hash roughly the first 256 tokens for routing, so routing keeps
+hitting; what is lost is the cached *extent*.
+
+This does not change the default — at our prompt sizes caching never
+engages, so there is nothing to lose. It changes how a *replacement*
+strategy should be judged. Summarise-and-keep-prefix is not merely "keeps
+more meaning"; it is the one that keeps the cache alive.
+
+### Where this fits a sovereignty project at all
+
+Prompt caching is a hosted-provider optimisation, and everything from Phase
+2 on is about not depending on hosted providers. But llama.cpp logged this
+during the 2.4 measurements, unprompted and on by default:
+
+```
+srv load_model: prompt cache is enabled, size limit: 8192 MiB
+```
+
+Different mechanism, identical structuring rule: stable prefix, reusable
+cache. Same shape as 2.3's portable lesson (GGUF↔llama.cpp,
+AWQ/GPTQ↔vLLM) — **the vendor mechanism does not transfer, the ordering
+principle does.**
+
+### What was checked rather than assumed
+
+Per `lessons.md` #2, I grepped pi-ai instead of asserting it lacked
+support. It has the lot, as compat flags: `cacheControl` (Anthropic-style
+markers on system prompt, last tool definition, last content block),
+`promptCacheOptions` (GPT-5.6+ explicit breakpoints, which older models
+*reject*), `promptCacheRetention`, and `prompt_cache_key` driven by
+`sessionId`. So enabling any of it remains a config edit — no provider
+names in control flow.
+
+Two cautions recorded with it. GPT-5.6+ bills cache **writes** at 1.25×
+uncached rate, so enabling explicit caching below the 1,024-token floor is
+strictly a loss. And this is *platform* API documentation, while our
+`openai-codex` entry uses the ChatGPT subscription endpoint — the same
+surface that rejects `max_output_tokens` outright where the platform
+accepts it. Probe before believing any of it applies there.
+
+---
+
 ## Conceptual framework
 
 Applied a structural-vs-dynamic lens across the roadmap (full breakdown in
