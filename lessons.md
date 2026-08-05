@@ -254,11 +254,26 @@ in `findings-log.md` (rendering as two headings); a test count updated in one
 place in `SESSION-HANDOFF.md` and stale in another; a "Running it" block
 still claiming 101 tests after the suite reached 142.
 
-**The rule.** A number written in two places is a number that will disagree
-with itself. When updating a count or a status, grep for the old value rather
-than editing the occurrence you remember.
+**And the serious version of it.** Closing 1.7 revealed `CLAUDE.md` — the
+file loaded into *every* session — still opening with "this repo is
+currently 100% design, zero code", months after that stopped being true,
+plus a live-looking open question that had been answered in an ADR eight
+days earlier. I read that navigation instead of the document it pointed at
+and told the user 1.7 was unbuilt. It was finished.
 
-**The check.** `grep -rn "<old value>"` before considering a doc update done.
+**The rule.** A number written in two places will disagree with itself. A
+*status* written once, at the top of the file everyone reads first, will be
+believed long after it stops being true — and it will be believed by you.
+
+Related: a checkbox whose blocker is resolved elsewhere does not untick
+itself. 1.7's last item said "waiting on a second reachable provider"; a
+later phase supplied one and nobody went back.
+
+**The check.** `grep -rn "<old value>"` before considering a doc update
+done. When a phase closes, grep the docs for "waiting on", "outstanding",
+"deferred" and "not yet" — those are the claims most likely to have expired
+without anyone noticing. And when a top-of-file summary contradicts the
+code in front of you, trust the code and fix the summary.
 
 ---
 

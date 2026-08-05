@@ -1543,6 +1543,90 @@ accepts it. Probe before believing any of it applies there.
 
 ---
 
+## 1.7 was already finished, and the docs said otherwise, 2026-08-05
+
+Asked whether 1.7 could be addressed, I said it was unbuilt with an open
+question outstanding. Both wrong, and the way they were wrong is the
+lesson.
+
+**The open question was answered on 2026-07-30.** `CLAUDE.md` said "ask the
+user which project to refactor, don't guess" — but the 1.7 ADR that
+supersedes it already recorded the investigation (`local-pi` has zero
+direct provider calls to remove) and the decision (don't refactor it). I
+read the navigation instead of the document it points at, and repeated a
+retired question back to the user as if it were live.
+
+**Four of five DoD items were ticked; the fifth was satisfied this
+session.** It read "genuine cross-provider swap — waiting on a second
+reachable provider, not on code." Phase 2 supplied that provider weeks
+later and `verify-swap.ts codex-default local-qwen` has been passing since.
+Nobody went back to tick the box, so the ADR read as incomplete.
+
+**The generalisable point:** a checkbox whose blocker is resolved elsewhere
+does not untick itself. When one document's open item depends on another
+document's work, finishing the second silently invalidates the first. Worth
+a grep for "waiting on" / "outstanding" / "deferred" whenever a phase
+closes.
+
+### What was actually missing: `step()`
+
+One real gap sat underneath the paperwork. Everything needed to drive a
+request → tool-call → response cycle existed after 1.6 *except the piece
+that composes them*, so both verify scripts hand-rolled it inline,
+hardcoded to two turns. Nobody could use the library without copying from
+a test script.
+
+Built as **one transition, not a loop**, after asking the user directly
+whether the error contract could be fixed without adding an agent loop. It
+can, and the line is sharper than it first looks: `step()` performs exactly
+one model call, dispatches any requested tools, appends results, and
+returns. Iteration is four visible lines in the caller.
+
+**The distinction is who decides when to stop.** An agent loop decides;
+this does not. Stopping rule, turn cap and failure policy stay in
+application code rather than becoming library defaults nobody reads — which
+is what 1.7's own "the harness's value is subtraction" argument requires.
+It also cannot reach for anything it was not handed: dispatch goes through
+the caller's registry, and the harness ships no built-in tools.
+
+### The error contract had been fiction in three files
+
+`types.ts`, `harness-result.ts` and `validate-context.ts` all describe one
+rule: a failure comes back as a `HarnessResult` with `stopReason: "error"`,
+so callers check one place. `validate-context.ts` even names "the
+orchestration loop" as the component that converts the throw.
+
+No such component existed. `validateContext` threw uncaught in both
+scripts, and `errorResult` had no caller outside its own test — the QA pass
+flagged it. `step()` is now that component, and the division of labour is
+deliberate: `validateContext` still throws, because a caller must not be
+able to proceed past it by accident, and `step()` is the single place that
+catches. A property test drives four failure shapes (Error, bare string,
+`null`, rejected promise) and asserts none escape.
+
+### Fixture mistakes, again
+
+Two of the new tests failed first: I guessed `createModels({ providers })`
+without checking the existing working usage two files away, and assumed the
+faux provider returns a default response when it requires a queued script
+(`setResponses`). Both are `lessons.md` #5 — and the second turned out
+useful, because switching to real queued responses removed most of the
+hand-rolled stubs and exercised the genuine provider path instead.
+
+### Doc drift, at scale
+
+Closing 1.7 meant `CLAUDE.md` still opened with **"this repo is currently
+100% design, zero code"** — untrue since 2026-08-03 — plus a
+"verification requires real API keys, none of this has been executed"
+section and a note to go pick a code location. The file loaded into every
+session was describing a repo that stopped existing weeks ago.
+
+`lessons.md` #11 said a number written twice will disagree with itself.
+The stronger version: **a status written once, at the top of the file
+everyone reads first, will be believed long after it stops being true.**
+
+---
+
 ## Conceptual framework
 
 Applied a structural-vs-dynamic lens across the roadmap (full breakdown in

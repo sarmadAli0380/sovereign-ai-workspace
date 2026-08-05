@@ -34,6 +34,11 @@ export {
 export { callOptions, getModels, loadModel, type ResolvedModel } from "./load-model.ts";
 export { complete, DEFAULT_RETRY_POLICY, type CompleteOptions } from "./complete.ts";
 
+// 1.7 — one transition of a conversation. Deliberately not a loop: the
+// caller owns iteration, and this is the one place that turns a failure
+// into a HarnessResult rather than a throw.
+export { step, type StepDeps, type StepResult } from "./step.ts";
+
 // 1.5 — conversation state
 export {
   capToolResult,

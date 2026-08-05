@@ -19,6 +19,7 @@ each one.
 | Phase | State |
 |---|---|
 | 1.1–1.7 | **Done.** Built, tested, verified against two live providers. |
+| 1.7 `step()` | **Done.** One transition, not a loop — caller owns iteration. |
 | 1.8 token budgeting | **Done.** `1.8-token-budgeting.md`, both stages, verified live. |
 | 2.1 model families | Done — `phase2/adrs/2.1-model-families.md` |
 | 2.2 inference engines | Done — `2.2-inference-engines.md` |
@@ -32,7 +33,7 @@ code changes — different API surfaces, same code, only the configKey
 differs. That was Phase 1's project goal and it needed Phase 2's local
 model to demonstrate.
 
-173 tests, `tsc --noEmit` clean.
+184 tests, `tsc --noEmit` clean.
 
 ---
 
@@ -41,7 +42,7 @@ model to demonstrate.
 ```bash
 cd ~/Desktop/sovereign-ai-roadmap
 
-npm test                                            # 173 tests
+npm test                                            # 184 tests
 npx tsc --noEmit                                    # typecheck
 
 node scripts/verify-live.ts codex-default           # cloud, full tool round trip
@@ -71,7 +72,9 @@ Built on `@earendil-works/pi-ai` (ADR-002). `src/types.ts` re-exports
 pi-ai's ontology unchanged and adds `HarnessResult`. `config.ts` +
 `load-model.ts` resolve a configKey to a model in one lookup.
 `conversation-manager.ts` + `truncation.ts` own conversation state.
-`tool-registry.ts` owns tool dispatch. `openai-compatible.ts` registers any
+`tool-registry.ts` owns tool dispatch. `step.ts` composes them into one
+transition — validate, call, dispatch, append, return — and is the single
+place a failure becomes a `HarnessResult` instead of a throw. `openai-compatible.ts` registers any
 `/v1`-speaking server generically. `complete.ts` wraps calls with retry.
 
 ---

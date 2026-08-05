@@ -2,11 +2,16 @@
 
 ## Project state
 
-This repo is currently 100% design, zero code. Every file under
-`phase1/adrs/` and `phase1/phase1-model-agnostic-harness-expanded.md` is a
-**decided** design, not a proposal — don't re-litigate them unless you find
-something factually wrong (e.g. an API that's changed or no longer
-exists). Your job is to implement what they describe, not redesign it.
+**Phase 1 and Phase 2 are complete and verified against two live
+providers.** This file used to say "100% design, zero code"; that has not
+been true since 2026-08-03. `src/` holds the harness, `scripts/` the
+verification and sizing tools, `phase1/adrs/` and `phase2/adrs/` the
+decided designs behind them.
+
+Those ADRs remain **decided** rather than proposals — don't re-litigate one
+unless you find it factually wrong, and several now carry dated corrections
+where exactly that happened. Phases 3–5 of `00-original-roadmap.md` are
+untouched.
 
 ## Read these first, in order
 
@@ -26,11 +31,24 @@ exists). Your job is to implement what they describe, not redesign it.
 underneath everything: the harness is built on `@earendil-works/pi-ai`,
 not a custom shim or LiteLLM directly.
 
-## What to build, in order
+## What exists
 
-1.2 → 1.4 → 1.5 → 1.6 can be built roughly in that order (1.5 and 1.6 are
-independent of each other and of 1.4, except where they compose later).
-1.7 needs all four finished first.
+All of the below is built, tested and run. Kept as a map of what each
+piece is *for* — the original "what to build" instructions are in git
+history if you need them.
+
+| | file | |
+|---|---|---|
+| 1.2 | `types.ts`, `harness-result.ts`, `validate-context.ts` | ontology + pre-flight guard |
+| 1.4 | `config.ts`, `load-model.ts` | configKey → model, one lookup |
+| 1.5 | `conversation-manager.ts`, `truncation.ts` | conversation state, budget, truncation |
+| 1.6 | `tool-registry.ts` | registry + parallel dispatch |
+| 1.7 | `step.ts` | one transition; the caller owns iteration |
+| 1.8 | in `conversation-manager.ts` | budget anchored on measured input |
+| 2.4 | `sizing.ts`, `scripts/size-model.ts` | memory sizing from measurement |
+| 2.5 | `openai-compatible.ts` | any `/v1` server, from JSON |
+
+The original per-task briefs, still accurate as intent:
 
 - **1.2** — mostly wiring, not building. Use `pi-ai`'s own `Context` /
   `Message` / `AssistantMessage` / `ToolResultMessage` / `Usage` types
@@ -60,25 +78,32 @@ independent of each other and of 1.4, except where they compose later).
   parallel via `Promise.allSettled`. Keep dispatch decoupled from
   `ConversationManager` — it returns `ToolResultMessage[]`, it does not
   append them itself.
-- **1.7** — the capstone. This needs an orchestration loop that doesn't
-  exist in any doc yet — the piece that calls `loadModel()`, runs
-  `ConversationManager` + `dispatchToolCall` together, and drives a full
-  request → response → tool-call → response cycle. Build that fresh, then
-  refactor a real project onto the harness and demo a provider swap via
-  one config edit, zero code changes.
+- **1.7** — see the section below. The refactor half was retired with
+  evidence; the composition half shipped as `step()`.
 
-## Open question for 1.7 — ask the user, don't guess
+## 1.7 is closed — the open question was answered
 
-The original plan targeted "the Pi agent project" as the refactor target,
-assuming it has direct provider API calls to replace with harness calls.
-But that project is itself likely built on `pi-ai` / `pi-coding-agent`
-already, so it may never have had raw API calls to strip out — the
-harness's actual value-add over what it already has would be
-`ConversationManager`, `ToolRegistry`/`dispatchToolCall`, and
-config-driven routing, not "remove direct API calls." Ask which target
-project to use and what the before/after comparison should actually
-demonstrate before starting 1.7 — don't assume the original framing still
-fits.
+This section used to say "ask the user which project to refactor, don't
+guess." **That question was settled on 2026-07-30 and 1.7 is complete
+(2026-08-05).** Read `phase1/adrs/1.7-integration-and-comparison.md` rather
+than re-opening it.
+
+The short version: the intended target (`local-pi`) was checked and had
+**zero** direct provider API calls to remove — it is already built on
+`pi-coding-agent`, which supplies session management, an agent loop and
+model resolution in more capable form, and its provider swap was already a
+one-line config edit. A refactor would have deleted working code and made
+the target worse. Decision with the user: don't do it.
+
+1.7 became two deliverables instead — `scripts/verify-swap.ts` (the live
+swap proof, now run genuinely cross-provider against `openai-codex` vs
+`ollama`) and a written comparison of where this harness sits relative to
+`pi-coding-agent`. Both done.
+
+The composition piece that *was* missing, `step()`, now exists in
+`src/step.ts`. It is deliberately one transition rather than a loop — the
+caller owns iteration — and it is the single place that turns a failure
+into a `HarnessResult` with `stopReason: "error"`.
 
 ## Known gotcha (found the hard way — see `findings-log.md`)
 
@@ -89,15 +114,17 @@ source, pointing at `createModels()`/provider factories as current). Use
 everywhere — not the flat deprecated function, even though the README
 shows it first.
 
-## Verification requires real API keys
+## Verification
 
-Every doc in `phase1/adrs/` is flagged research-stage, not run — none of
-this has been executed against a real model yet. You'll need
-`ANTHROPIC_API_KEY` and `OPENAI_API_KEY` in the environment to actually
-prove any of it works. If you don't have them, still build everything,
-but clearly flag what's implemented-but-unverified rather than silently
-skipping the proof step or claiming something works when it hasn't been
-run.
+Two providers are wired and working: `openai-codex` (OAuth, credential in
+`.harness-credentials.json`, **expires** — re-run `node scripts/login.ts
+openai-codex`, which needs the user at a browser) and `ollama` (needs
+`ollama serve`). See `SESSION-HANDOFF.md` for the run commands.
+
+The standard this project holds itself to: **mark claims `[VERIFIED]` /
+`[UNVERIFIED]`, and separate decisions from facts.** If you cannot run
+something, say it is implemented-but-unverified rather than skipping the
+proof quietly or claiming it works.
 
 ## Read `lessons.md` before writing code
 
@@ -119,11 +146,9 @@ mistake — the entries earn their place by having actually shipped.
   have to make that weren't already pinned down) into `findings-log.md`
   in the same style as the existing entries — don't scatter new
   standalone summary files instead.
-- Pick a sensible code location. This repo has been docs-only
-  (`phase1/adrs/`) so far — put implementation code somewhere clearly
-  separated from the design docs (e.g. a top-level `src/` or
-  `packages/harness/`), with `node_modules` properly gitignored inside an
-  actual git repo, not left dangling.
+- Code lives in `src/` (library) and `scripts/` (executables), separate
+  from the design docs. Tests sit beside their subject as `*.test.ts` and
+  run with `npm test`.
 - Don't re-decide things already decided in the ADRs (routing shape,
   error handling, parallel execution, truncation ownership, etc.). If you
   think one is actually wrong, flag it and explain why rather than

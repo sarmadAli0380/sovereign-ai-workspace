@@ -4,24 +4,23 @@
  *   node scripts/verify-live.ts [configKey]     # default: codex-default
  *
  * Drives one full request → tool-call → dispatch → response cycle through
- * every piece 1.2/1.4/1.5/1.6 built, using the same minimal `get_weather`
+ * every piece 1.2/1.4/1.5/1.6/1.7 built, using the same minimal `get_weather`
  * tool-calling test case the original spike used for Anthropic (ADR 1.1),
  * so the two legs are comparable.
  *
- * This is a verification script, NOT 1.7's orchestration loop. 1.7 is a
- * separate task whose target is still an open question — see CLAUDE.md.
- * The driving here is deliberately inline and throwaway.
+ * The turn cycle runs through 1.7's `step()`. The turn cap and the stopping
+ * rule live in this file, not in the library — `step()` performs exactly one
+ * transition and returns.
  */
 
 import { Type } from "@earendil-works/pi-ai";
-import type { AssistantMessage, ToolCall } from "@earendil-works/pi-ai";
+import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { loadConfig } from "../src/config.ts";
 import { getModels, loadModel } from "../src/load-model.ts";
-import { complete } from "../src/complete.ts";
-import { validateContext } from "../src/validate-context.ts";
 import { ConversationManager } from "../src/conversation-manager.ts";
 import { estimateContextTokens } from "../src/truncation.ts";
-import { ToolRegistry, dispatchToolCalls } from "../src/tool-registry.ts";
+import { ToolRegistry } from "../src/tool-registry.ts";
+import { step, type StepDeps } from "../src/step.ts";
 import type { HarnessResult } from "../src/types.ts";
 
 const configKey = process.argv[2] ?? "codex-default";
@@ -97,17 +96,27 @@ conversation.append({
   timestamp: Date.now(),
 });
 
-// --- 1.2: pre-flight guard, then the call
+// --- 1.7: one step per turn.
+//
+// This used to hand-roll the validate -> complete -> dispatch -> append
+// cycle inline, hardcoded to exactly two turns, which is precisely why
+// `step()` now exists: nobody could use the library without copying this
+// block out of a test script. The loop below is the caller's, not the
+// library's.
 
-async function call(): Promise<HarnessResult> {
-  const context = conversation.getContext();
-  validateContext(context, configKey, Object.keys(config));
-
-  return complete(models, model, entry, context, configKey, {
+const deps: StepDeps = {
+  models,
+  model,
+  entry,
+  configKey,
+  conversation,
+  registry,
+  knownConfigKeys: Object.keys(config),
+  options: {
     onRetry: (attempt, max, delayMs, error) =>
       console.log(`  transient failure (${error}) — retry ${attempt}/${max} in ${delayMs}ms`),
-  });
-}
+  },
+};
 
 function describe(label: string, result: HarnessResult): void {
   const m = result.message;
@@ -151,33 +160,35 @@ function checkShape(m: AssistantMessage): string[] {
   return failures;
 }
 
-const first = await call();
-describe("turn 1", first);
-conversation.append(first.message);
+// The turn cap lives here, in the caller, where it is visible — `step()`
+// has no opinion about when to stop. Two is enough to exercise a tool
+// round trip; a real application would choose its own.
+const MAX_TURNS = 4;
+const results: HarnessResult[] = [];
+let turn = 0;
+let outcome = await step(deps);
 
-const toolCalls = first.message.content.filter((b): b is ToolCall => b.type === "toolCall");
-console.log(`\ntool calls requested: ${toolCalls.length}`);
+for (;;) {
+  turn += 1;
+  results.push(outcome.result);
+  describe(turn === 1 ? "turn 1" : `turn ${turn} (after tool results)`, outcome.result);
 
-let second: HarnessResult | undefined;
-if (toolCalls.length > 0) {
-  // 1.6 dispatch returns results; 1.5's append() is what applies the cap.
-  const results = await dispatchToolCalls(toolCalls, registry);
-  for (const result of results) {
+  if (turn === 1) console.log(`\ntool calls requested: ${outcome.toolCalls.length}`);
+  for (const result of outcome.toolResults) {
     console.log(`  ${result.toolName} -> isError=${result.isError}`);
   }
-  conversation.appendAll(results);
 
-  second = await call();
-  describe("turn 2 (after tool results)", second);
-  conversation.append(second.message);
+  if (outcome.done || turn >= MAX_TURNS) break;
+  outcome = await step(deps);
 }
+
+const exercisedTools = results.length > 1;
 
 // --- report
 
-const failures = [
-  ...checkShape(first.message).map((f) => `turn 1: ${f}`),
-  ...(second ? checkShape(second.message).map((f) => `turn 2: ${f}`) : []),
-];
+const failures = results.flatMap((r, i) =>
+  checkShape(r.message).map((f) => `turn ${i + 1}: ${f}`),
+);
 
 console.log(`\n=== summary ===`);
 console.log(`messages in context: ${conversation.getHistory().length}`);
@@ -198,7 +209,7 @@ console.log(
       : ""),
 );
 console.log(`  of which overhead: ${conversation.getOverheadTokens()} (system prompt + tool schemas)`);
-console.log(`tool call round-trip: ${toolCalls.length > 0 ? "exercised" : "NOT exercised (model did not call the tool)"}`);
+console.log(`tool call round-trip: ${exercisedTools ? "exercised" : "NOT exercised (model did not call the tool)"}`);
 
 if (failures.length > 0) {
   console.error(`\n✗ Structural conformity failures:`);
