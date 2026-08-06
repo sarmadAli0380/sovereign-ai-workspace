@@ -50,6 +50,11 @@ single transition underneath.
 
 *The sovereignty claim lives or dies here.*
 
+**Designed: `phaseB/adrs/B1-persistence-and-residency.md`.** Not yet
+implemented. Note it revises 1.5: truncation becomes a projection rather
+than a mutation, because dropping a message from the model's window must not
+delete it from the user's history.
+
 - Postgres schema: users, conversations, messages, tool calls, attachments.
 - `ConversationManager` currently holds one conversation in memory in one
   process. It needs to load from and write to storage without losing the

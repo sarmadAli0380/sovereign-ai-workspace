@@ -1777,6 +1777,90 @@ network I/O on a client's server.
 
 ---
 
+## Designing Phase B: persistence forces a change to 1.5, 2026-08-05
+
+Two findings from reading our own code before designing the storage layer.
+
+### Truncation currently deletes, and a product cannot do that
+
+**[VERIFIED]** `ConversationManager.append()` ends with
+`this.context.messages = kept`. Messages evicted to fit the context window
+are gone from the object.
+
+Correct for a library where the caller owned the transcript. Wrong for a
+product: a user scrolling back must see the whole conversation while the
+model sees a window, and today those are the same array.
+
+So B.1 revises 1.5's decision 4 — **the stored conversation is complete and
+the model's context is a projection of it.** The guarantee survives (what
+reaches the provider is still always within budget); it is produced by
+projecting rather than discarding. Recorded as a revision rather than a
+quiet change, per the standing rule about not re-deciding ADRs silently.
+
+Worth noting *why* the original was reasonable: at the time, the transcript
+and the context genuinely were the same thing, because there was no storage
+and no user. The decision was right for the system that existed. It became
+wrong when the product framing changed (ADR-003) — which is the same class
+of problem as the docs describing a library, just expressed in code.
+
+### The 1.8 anchor needs no table of its own
+
+**[VERIFIED]** inventory of `ConversationManager`'s state: only
+`context.messages` is genuinely persistent. `systemPrompt`, `tools`,
+`maxToolResultChars` and `strategy` are configuration; `budget`,
+`overheadTokens` and `messageBudget` are arithmetic over model config.
+
+And the anchor is *derivable*. It is `{ tokens, messageIndex }` where
+`tokens = input + cacheRead + cacheWrite` on an assistant message — so if
+usage is stored per message, which audit and spend control need anyway, the
+anchor rebuilds on load from the most recent assistant message with usable
+usage.
+
+With the same condition 1.8 already applies to truncation: rebuild only if
+the whole anchored prefix is loaded. A windowed load that starts after the
+anchored message must report `estimated`, because the anchor's count covers
+messages that are not in memory. The `BudgetSource` field added in 1.8
+already expresses this — no new API, only the discipline to use it.
+
+A design property built for one reason turning out to fit a later
+requirement exactly, for the second time this week (the first was `step()`
+already having the shape that approval-suspension needed). Both times the
+cause was the same: the earlier decision modelled *what was actually true*
+rather than what was convenient.
+
+### The residency leak that is invisible in a schema
+
+The sovereignty claim is only as strong as the leakiest place data touches,
+and most of that risk is not in the chat table — it is in embeddings,
+search indexes, logs, caches, temp files and telemetry.
+
+The one most easily missed: **the embedding model has to be local too.** A
+deployment storing embeddings in the client's pgvector while calling a
+hosted embedding API has shipped every document out of the building. The
+vector is local; the document was not. It is invisible in the schema
+because the leak is in a code path, not a table.
+
+Hence a residency *inventory* as a deliverable rather than a paragraph:
+every place client data lands, enumerated, each one inside the boundary.
+Anything not on the list is a leak nobody has thought about yet.
+
+### Erasure versus audit, and a familiar trap
+
+GDPR-style erasure and audit immutability genuinely conflict. Resolved by
+having audit records reference identifiers and metadata, never content:
+erasure destroys what was said, the audit trail retains that something was
+said and by whom. It has to be designed in from the start, because an audit
+log that copied prompt text cannot later be made erasable.
+
+Related, and the same shape as `lessons.md` #6: a deleted message still
+retrievable by semantic search is a compliance failure that stays invisible
+until an auditor goes looking. So deletion spans every derived store and is
+verified **by searching for the erased content** — from the retrieval side,
+not the storage side. Checking the table you just deleted from proves
+nothing.
+
+---
+
 ## Conceptual framework
 
 Applied a structural-vs-dynamic lens across the roadmap (full breakdown in
