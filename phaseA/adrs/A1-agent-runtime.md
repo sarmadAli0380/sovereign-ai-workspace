@@ -257,10 +257,11 @@ that journal, using event ids for idempotency.
 - [ ] `step()` moves to `stream()` with an optional event sink; behaviour
       with no sink is unchanged, proven by the existing tests still passing.
 - [ ] `run()` with required `maxTurns`, cancellation, and event emission.
-- [ ] Event protocol defined as types, with a serializability test.
-- [ ] Audience-specific UI, persistence, audit, and log projections, with a
+- [x] Event protocol defined as types, with serializability, ordering,
+      terminal-uniqueness, and future-version rejection tests (A0.1).
+- [x] Audience-specific UI, persistence, audit, and log projections, with a
       test proving tool arguments and message content cannot enter audit/log
-      records.
+      records. Streaming deltas are excluded from persistence/audit (A0.1).
 - [ ] Capability declarations on `ToolHandler`, and a policy layer evaluated
       before `execute()`.
 - [ ] Workspace confinement with a symlink-escape test.

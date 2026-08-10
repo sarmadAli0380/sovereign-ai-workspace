@@ -2030,3 +2030,28 @@ content-shape difference was expected and explicit: Qwen returned
 `text|thinking`, while Codex returned `text`. Codex still warns that its
 ChatGPT-backed API ignores `maxTokens`, so structural conformance does not
 remove that spend-control limitation.
+
+---
+
+## A0.1: the run-event contract is now executable, 2026-08-10
+
+The first post-audit implementation slice added a product-owned version-1
+`RunEvent` union without adding a run loop or transport. Runtime parsing
+rejects unknown versions, undeclared fields, invalid JSON values, weakened
+sensitivity labels, and content events falsely labelled for audit/log use.
+Complete-run validation enforces stable identity, strictly increasing unique
+sequences, non-decreasing turns, one terminal event, and no event after a
+terminal outcome.
+
+Audience projection is schema-driven. UI and persistence receive owned
+content snapshots. Audit receives selected metadata plus deterministic
+content hashes and sizes where evidence requires them. Operational records
+receive metadata and sizes but no content hashes. Tool arguments/results,
+message content, free-form decision/failure details, and extension payloads
+cannot reach audit or operational projections through object spreading.
+
+Streaming deltas are explicitly ephemeral: full delta content may target
+only the live UI, operational telemetry may receive its byte count, and both
+persistence and audit projections omit the event. Completed messages remain
+the canonical record. A0.3 will replace `message.completed.content`'s
+temporary JSON value with the versioned product message envelope.

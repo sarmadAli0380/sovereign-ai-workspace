@@ -26,6 +26,7 @@ each one.
 | 2.3 quantization | Done — `2.3-quantization.md` |
 | 2.4 sizing math | Done — `2.4-gpu-sizing-math.md`, measured, shipped as code |
 | 2.5 local integration | Done — `2.5-local-provider-integration.md`, running |
+| A0.1 run events | Done — versioned union, runtime parser, run invariants, audience projections |
 
 **The headline result:** the harness swaps between a cloud API
 (`openai-codex`) and a self-hosted model (`ollama`/`qwen3:4b`) with zero
@@ -33,7 +34,7 @@ code changes — different API surfaces, same code, only the configKey
 differs. That was Phase 1's project goal and it needed Phase 2's local
 model to demonstrate.
 
-206 tests, `tsc --noEmit` clean.
+229 tests, `tsc --noEmit` clean.
 
 Latest baseline evidence is machine-readable at
 `conformance/2026-08-10-remediation-baseline.json`. Deterministic checks,
@@ -49,7 +50,7 @@ service was restarted at 8192.
 ```bash
 cd ~/Downloads/sovereign-ai-roadmap
 
-npm test                                            # 206 tests
+npm test                                            # 229 tests
 npx tsc --noEmit                                    # typecheck
 
 node scripts/verify-live.ts codex-default           # cloud, full tool round trip
@@ -85,6 +86,10 @@ pi-ai's ontology unchanged and adds `HarnessResult`. `config.ts` +
 transition — validate, call, dispatch, append, return — and is the single
 place a failure becomes a `HarnessResult` instead of a throw. `openai-compatible.ts` registers any
 `/v1`-speaking server generically. `complete.ts` wraps calls with retry.
+`events.ts` owns the versioned product run-event contract and complete-run
+invariants; `event-projections.ts` creates content-bearing UI/persistence
+views and redacted audit/operational views. Neither is wired into `step()`
+yet; that belongs to A1.
 
 ---
 

@@ -28,6 +28,7 @@ Not restated in the phases below, because it exists and is verified.
 | Provider registration | any OpenAI-compatible `/v1` server, from JSON |
 | Memory sizing | measured, validated across two model families |
 | Live verification | two providers, genuine cross-provider swap |
+| Run/event contract | versioned typed events, runtime validation, ordered-run invariants, audience redaction |
 
 **Roughly 10–15% of the product, and it is the bottom layer.** Everything
 below is new work.
@@ -38,7 +39,9 @@ below is new work.
 
 *Turns a model call into something that can do work.*
 
-**Designed: `phaseA/adrs/A1-agent-runtime.md`.** Not yet implemented.
+**Designed: `phaseA/adrs/A1-agent-runtime.md`.** A0.1's event contract and
+audience projections are implemented; the streaming run loop and tool-policy
+work remain.
 
 - An agent loop over `step()` — turn limits, cancellation, streaming out.
 - A built-in tool suite: file read/write, search, shell, HTTP. Each one a

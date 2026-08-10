@@ -98,6 +98,9 @@ explicit before implementations depend on them.
 
 ### A0.1 — canonical run/event envelope
 
+**Status:** Implemented and deterministically verified, 2026-08-10. Runtime
+emission and transport remain deliberately deferred to A1 and A0.2.
+
 Add a product-owned, versioned event envelope. Every event contains:
 
 - `schemaVersion`
@@ -144,8 +147,11 @@ Decide and test these semantics:
 **Files:** new `src/events.ts`, `src/event-projections.ts`, and colocated
 tests.
 
-**Acceptance gate A0.1:** property tests generate complete runs and prove
-ordering, JSON serializability, terminal-event uniqueness, and redaction.
+**Acceptance gate A0.1: passed.** Property tests generate complete runs and
+prove ordering, JSON serializability, terminal-event uniqueness, ephemeral
+delta handling, and schema-driven redaction. Unknown versions and undeclared
+fields fail explicitly; version-1 extensions have one declared envelope
+location.
 
 ### A0.2 — message transport mapping
 
