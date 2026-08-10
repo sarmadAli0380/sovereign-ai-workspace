@@ -1,0 +1,77 @@
+{
+  "schemaVersion": 1,
+  "recordedAt": "2026-08-10T16:05:55+05:00",
+  "branch": "audit-remediation",
+  "environment": {
+    "hardware": "Mac15,12 Apple M3",
+    "architecture": "arm64",
+    "systemMemoryBytes": 8589934592,
+    "operatingSystem": "macOS 26.6",
+    "node": "24.12.0",
+    "ollama": "0.32.5"
+  },
+  "deterministicValidation": {
+    "verdict": "pass",
+    "testsPassed": 206,
+    "testsFailed": 0,
+    "typecheck": "pass",
+    "diffCheck": "pass"
+  },
+  "localFunctionalConformance": {
+    "verdict": "pass",
+    "provider": "ollama",
+    "model": "qwen3:4b",
+    "digest": "359d7dd4bcdab3d86b87d73ac27966f4dbb9f5efdfcc75d34a8764a09474fae7",
+    "parameterSize": "4.0B",
+    "quantization": "Q4_K_M",
+    "toolRoundTrip": true,
+    "toolResultError": false,
+    "finalTextAnswer": true,
+    "assistantMessageShape": true,
+    "usageReported": true,
+    "thinkingBlocksReported": true,
+    "turnLatencyMs": [29731, 19203],
+    "totalLatencyMs": 48934,
+    "usageTotalTokens": [413, 719]
+  },
+  "localDeploymentConformance": {
+    "verdict": "pass_after_restart",
+    "configuredContext": 8192,
+    "initialServedContext": 4096,
+    "initialGateVerdict": "fail",
+    "initialGateFailClosed": true,
+    "correctedServedContext": 8192,
+    "correctedGateVerdict": "pass",
+    "residentBytes": 3777935441,
+    "processor": "Metal"
+  },
+  "cloudFunctionalConformance": {
+    "verdict": "pass",
+    "provider": "openai-codex",
+    "model": "gpt-5.6-luna",
+    "toolRoundTrip": true,
+    "toolResultError": false,
+    "finalTextAnswer": true,
+    "assistantMessageShape": true,
+    "usageReported": true,
+    "turnLatencyMs": [2651, 1562],
+    "totalLatencyMs": 4213,
+    "usageTotalTokens": [100, 131],
+    "warning": "The openai-codex API ignores the configured maxTokens value, so output is not bounded by that setting."
+  },
+  "crossProviderConformance": {
+    "verdict": "pass",
+    "configKeys": ["codex-default", "local-qwen"],
+    "providers": ["openai-codex", "ollama"],
+    "models": ["gpt-5.6-luna", "qwen3:4b"],
+    "latencyMs": [2143, 41511],
+    "usageTotalTokens": [64, 741],
+    "requiredRuntimeShape": "pass",
+    "providerDifference": "Qwen returned text and thinking blocks; Codex returned text only.",
+    "sameCallingCode": true
+  },
+  "performance": {
+    "verdict": "measured_no_slo",
+    "note": "These are one-run smoke measurements. No product latency SLO exists, so they are not a performance pass/fail gate."
+  }
+}

@@ -68,14 +68,33 @@ either living with someone else's model layer — the exact layer this
 project exists to be better at — or replacing it and diverging from upstream
 permanently.
 
-**Decision: implement everything ourselves.** The cost is understood and
-real: this is many months of work, and most of it (UI, storage, auth,
-files) is not the model-agnostic part. Recorded here so nobody later
-mistakes the timeline for a surprise.
+**Decision: build and own the product rather than fork another workspace.**
+The cost is understood and real: this is many months of work, and most of
+it (UI, storage, auth, files) is not the model-agnostic part. Recorded here
+so nobody later mistakes the timeline for a surprise.
+
+### Revision, 2026-08-06 — ownership is not reimplementation
+
+An implementation audit found that "implement everything ourselves" was
+too broad for the security and reliability promises this product makes.
+Owning the product means owning its architecture, runtime, policy model,
+conformance suite, data contract, and user experience. It does **not** mean
+writing cryptography, password hashing, OAuth/OIDC protocol machinery,
+database drivers, object-store clients, archive parsers, or the MCP wire
+protocol from first principles.
+
+**Revised boundary:** use maintained, permissively licensed infrastructure
+libraries behind interfaces we own; do not fork a competing workspace or
+inherit its product architecture. Security-sensitive primitives must have a
+named upstream, a pinned version, an update policy, and focused integration
+tests. The differentiator remains ours without making undifferentiated
+plumbing an avoidable source of vulnerabilities.
 
 ## Decision 2 — how we use other projects
 
-They are **reference material, not a source of code**.
+The surveyed workspace products are **reference material, not a source of
+product code**. This does not prohibit importing focused infrastructure
+libraries under the revised Decision 1 boundary.
 
 - **Take:** what features exist and why, and how a specific bug was solved.
 - **Never take:** code, file structure, or the shape of an implementation.

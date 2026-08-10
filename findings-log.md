@@ -1913,9 +1913,11 @@ usually resolves the design.
 - `model.config.json` — the 1.4 config file.
 - `scripts/login.ts` — one-time provider OAuth login.
 - `scripts/verify-live.ts` — end-to-end live verification against a real
-  provider (implemented, not yet run — blocked on OAuth re-authorization).
+  provider. Local Qwen passed on 2026-08-06; current cloud reruns are blocked
+  on provider authentication.
 - `scripts/verify-swap.ts` — 1.4's swap DoD: same prompt through two config
-  keys, structural diff (implemented, not yet run — same blocker).
+  keys and a fail-closed structural diff. A current rerun needs a second
+  authenticated provider.
 - `phase1/adrs/1.8-token-budgeting.md` — token budgeting: the two defects
   above, why the `prev.in + prev.out` anchor was measured and rejected, and
   Decisions A (per-response stale anchor, not a config flag) and B (codex
@@ -1930,3 +1932,101 @@ usually resolves the design.
   provider code to remove and sits above this harness, so the refactor was
   retired in favour of the swap proof plus a comparison of where each layer
   fits.
+
+---
+
+## Ownership audit: the foundation was strong, but four product assumptions were unsafe, 2026-08-06
+
+The project changed ownership and was audited as a system rather than as a
+sequence of completed tasks. The test suite was green, but several public
+claims were wider than the checks underneath them.
+
+### A dependency type cannot be the permanent product schema
+
+Phase 1 deliberately adopted `pi-ai`'s message types unchanged. That was a
+good library decision and a dangerous persistence decision: B.1 proposed
+storing those blocks verbatim, which would let a package update redefine
+historical data and the public API together. B.1 now stores a versioned
+product envelope and treats provider-specific content as an extension. The
+runtime can still use `pi-ai`; the database no longer belongs to it.
+
+### Durability cannot silently degrade when completeness is a promise
+
+A.1 said a database outage should degrade recording without killing the
+conversation. B.1 promised complete history and audit. With no durable
+buffer those cannot both be true. The revised design keeps the runtime free
+of database handles but makes the server journal transitions before
+acknowledging them. An outage means encrypted in-boundary spool or a
+suspended run, never successful work with missing history.
+
+### Cross-store erasure is a saga, not one transaction
+
+The earlier B.1 text required one transaction across Postgres, disk/object
+storage, pgvector and search. No such transaction exists. The replacement is
+a tombstone plus transactional outbox, idempotent deletion workers,
+reconciliation, and retrieval-side proof. The user-visible guarantee is
+convergence with visible failure, not fictional atomicity.
+
+### One event protocol still needs different audience projections
+
+`tool_start.arguments` is user content. Sending the same serialized payload
+unchanged to UI, persistence, audit and logs would violate B.1's own rule
+that audit records contain metadata only. A.1 now defines schema-driven
+projections: authorized UI/persistence may carry content; audit and logs may
+not.
+
+### Concrete runtime defects fixed in the same pass
+
+- Cancellation reached retry sleeps but not the active provider request.
+- Provider/transport errors were appended as assistant conversation turns.
+- `getContext()` exposed mutable internal state, allowing callers to bypass
+  token budgets; negative reserves widened the window.
+- The live verifier could exit successfully without exercising a tool, and
+  the swap verifier could pass two identically malformed response types.
+- Tracked local-provider JSON allowed inline API keys and under-validated
+  optional fields.
+- A secret terminal prompt echoed long-lived values.
+- Any local-provider config read error was treated as "file absent".
+
+Each code defect now has a regression test where it can be tested without a
+live provider. Live conformance remains a separate, dated proof.
+
+---
+
+## Live performance and deployment conformance, 2026-08-06
+
+`local-qwen` completed the real two-turn path twice on the running default
+Ollama service: `toolUse` with one successful `get_weather` result, followed
+by a non-empty final answer. Runtime `AssistantMessage` validation, usage
+reporting, thinking blocks, and anchored budgeting all passed.
+
+The first observed 4096-context run took 57,170 ms end to end; the warm run
+took 19,902 ms. These are measurements, not an SLO pass: the product has no
+latency threshold yet.
+
+The deployment check found that the service was actually serving 4096 while
+the repository budgeted for 8192. An isolated instance started with
+`OLLAMA_CONTEXT_LENGTH=8192` then passed the same tool conformance twice, in
+29,655 ms and 43,880 ms. Ollama reported 3,777,935,441 bytes resident and
+100% GPU execution. Generation ranged from 15.71 to 19.31 tokens per second
+across those turns; the spread is exactly why a dated sample is evidence,
+not yet a performance SLO.
+
+Running duplicate 4096 and 8192 Qwen instances simultaneously exhausted
+Metal memory on this 8 GB M3 host. The 8192 instance passed after the
+duplicate runner was unloaded, so 8192 is viable for one resident Qwen but
+not for two copies. This operational constraint now belongs in deployment
+capacity policy rather than remaining an assumption in sizing math.
+
+The verifier now queries Ollama `/api/ps` and fails closed when served and
+configured contexts differ. Full dated evidence is stored in
+`conformance/2026-08-06-local-qwen.json`.
+
+After fresh browser OAuth, `openai-codex/gpt-5.6-luna` also passed the live
+tool round trip in 3,782 ms. The current cross-provider swap then passed:
+identical calling code and prompt reached Codex and Qwen in 1,963 ms and
+41,231 ms respectively, with every required runtime field valid. The only
+content-shape difference was expected and explicit: Qwen returned
+`text|thinking`, while Codex returned `text`. Codex still warns that its
+ChatGPT-backed API ignores `maxTokens`, so structural conformance does not
+remove that spend-control limitation.

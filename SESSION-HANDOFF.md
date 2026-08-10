@@ -1,7 +1,7 @@
 # Session handoff — Sovereign AI Roadmap
 
-**Last updated:** 2026-08-05
-**Repo:** `~/Desktop/sovereign-ai-roadmap`
+**Last updated:** 2026-08-10
+**Repo:** `~/Downloads/sovereign-ai-roadmap`
 **State:** Phase 1 complete and verified live. Phase 2 complete.
 
 Read `CLAUDE.md` first, then this, then `findings-log.md`. The findings log
@@ -33,16 +33,23 @@ code changes — different API surfaces, same code, only the configKey
 differs. That was Phase 1's project goal and it needed Phase 2's local
 model to demonstrate.
 
-184 tests, `tsc --noEmit` clean.
+206 tests, `tsc --noEmit` clean.
+
+Latest baseline evidence is machine-readable at
+`conformance/2026-08-10-remediation-baseline.json`. Deterministic checks,
+Codex and local-Qwen tool conformance, and the cross-provider swap passed.
+The verifier also demonstrated that it fails when Ollama's actually served
+context does not match the configured budget, before passing after the
+service was restarted at 8192.
 
 ---
 
 ## Running it
 
 ```bash
-cd ~/Desktop/sovereign-ai-roadmap
+cd ~/Downloads/sovereign-ai-roadmap
 
-npm test                                            # 184 tests
+npm test                                            # 206 tests
 npx tsc --noEmit                                    # typecheck
 
 node scripts/verify-live.ts codex-default           # cloud, full tool round trip
@@ -55,8 +62,10 @@ node scripts/size-model.ts --model qwen3:4b --budget 5.7   # 2.4 sizing
 `HARNESS_TRANSPORT=sse` is **no longer needed** — transport moved into
 per-entry config. Verified 2026-08-04.
 
-**Ollama must be running** for `local-qwen`:
-`ollama serve` (model `qwen3:4b` already pulled, 2.5 GB).
+**Ollama must be running at the configured context** for `local-qwen`:
+`OLLAMA_CONTEXT_LENGTH=8192 ollama serve` (model `qwen3:4b` already pulled,
+2.5 GB). The desktop app's default 4096 context is not conformant;
+`verify-live.ts` checks `/api/ps` and rejects that mismatch.
 
 **Codex credential** lives in `.harness-credentials.json` (gitignored,
 0600). It is OAuth and **will expire** — symptom is

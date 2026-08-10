@@ -9,6 +9,10 @@ swappable per client requirement.
 
 **Deployment shape:** server plus web UI first; desktop client later.
 
+**Execution plan:** `implementation-plan-a0-through-phase-b.md` sequences
+the pre-Phase-A event, prompt/cache, and model-control foundations through
+the Phase A and Phase B implementation gates.
+
 ---
 
 ## What is already done
@@ -42,6 +46,10 @@ below is new work.
   design, not an afterthought.
 - MCP client support, so a client can attach their own internal tools.
 - Streaming to the UI: tokens, tool calls, and errors as they happen.
+- Active provider/tool cancellation and finite timeouts; operational errors
+  never become assistant history.
+- One causal event protocol with separate content-bearing UI/persistence and
+  metadata-only audit/log projections.
 
 **Reverses 1.7's "no agent loop" decision** — see ADR-003. `step()` stays a
 single transition underneath.
@@ -56,6 +64,8 @@ than a mutation, because dropping a message from the model's window must not
 delete it from the user's history.
 
 - Postgres schema: users, conversations, messages, tool calls, attachments.
+- Versioned product message envelopes, so stored history is not coupled to a
+  `pi-ai` package version.
 - `ConversationManager` currently holds one conversation in memory in one
   process. It needs to load from and write to storage without losing the
   budgeting work already done.
@@ -63,12 +73,16 @@ delete it from the user's history.
 - Embeddings and vector search **in the client's database** — pgvector.
   Embeddings are derived from client data and are client data.
 - Retention and deletion that actually deletes, including from indexes.
+- Durable journal/outbox and idempotent erasure workflows across database,
+  object storage, embeddings, caches, and search.
 
 ## Phase C — the server
 
 - HTTP + SSE API in front of the agent runtime.
 - Authentication, sessions, and RBAC. Deployed per client, so a single
   tenant per deployment is the default; multi-tenant is a later question.
+- Secret management and rotation. Tracked configuration may reference a
+  secret but never contain one.
 - Per-user and per-org model access — not every user gets every model.
 - Rate limiting and spend controls, using the measured token accounting
   rather than an estimate.
@@ -89,6 +103,9 @@ delete it from the user's history.
   does it report usage, does tool calling round-trip cleanly, does it leak
   tool JSON into content, does it replay reasoning.
 - Machine-readable results, dated, per model — a client-facing artifact.
+- Fail-closed assertions: a tool test fails unless a tool round trip really
+  occurred, malformed providers cannot pass by agreeing on the same wrong
+  type, and a cross-provider proof requires two different providers.
 - Grows directly out of `verify-live` / `verify-swap` / `size-model` and the
   catalogue of provider lies in `findings-log.md`.
 
@@ -99,6 +116,8 @@ Breadth here is measured in *verified* models, never in adapter count.
 - One `docker-compose` bringing up app, database, vector store, and
   inference engine on a fresh server.
 - Air-gapped mode with zero outbound calls, for clients who require it.
+- Enforced egress policy at the network and application layers; air-gapped
+  mode cannot resolve a hosted provider even when one remains in config.
 - On-prem versus private cloud, and when to recommend which.
 - Hardware sizing from `size-model.ts` — already built.
 
@@ -129,6 +148,12 @@ alongside from the start, because every model added to a client deployment
 needs certifying anyway and the suite grows by being used. F and G are what
 make it sellable to a regulated client. H is what makes the second client
 cheaper than the first.
+
+Security and governance are acceptance gates across A–F, not work postponed
+until G. Phase G packages and exposes the evidence; threat modelling, secret
+handling, redaction, durable audit events, encryption boundaries, and
+erasure semantics must shape the earlier schemas and APIs before they
+freeze.
 
 ## The honest note
 

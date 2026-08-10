@@ -1,0 +1,111 @@
+{
+  "schemaVersion": 1,
+  "recordedAt": "2026-08-06T18:08:36+05:00",
+  "branch": "audit-remediation",
+  "environment": {
+    "hardware": "Mac15,12 Apple M3",
+    "architecture": "arm64",
+    "systemMemoryBytes": 8589934592,
+    "operatingSystem": "macOS 26.6 (25G72)",
+    "node": "24.12.0",
+    "ollama": "0.32.5"
+  },
+  "model": {
+    "provider": "ollama",
+    "id": "qwen3:4b",
+    "digest": "359d7dd4bcdab3d86b87d73ac27966f4dbb9f5efdfcc75d34a8764a09474fae7",
+    "parameterSize": "4.0B",
+    "quantization": "Q4_K_M"
+  },
+  "functionalConformance": {
+    "verdict": "pass",
+    "toolRoundTrip": true,
+    "toolResultError": false,
+    "finalTextAnswer": true,
+    "assistantMessageShape": true,
+    "usageReported": true,
+    "thinkingBlocksReported": true
+  },
+  "deploymentConformance": {
+    "defaultService": {
+      "verdict": "fail",
+      "configuredContext": 8192,
+      "servedContext": 4096,
+      "residentBytes": 3169761361,
+      "reason": "The running default Ollama service did not use OLLAMA_CONTEXT_LENGTH=8192."
+    },
+    "isolatedDeclaredService": {
+      "verdict": "pass",
+      "configuredContext": 8192,
+      "servedContext": 8192,
+      "residentBytes": 3777935441,
+      "processor": "100% GPU"
+    },
+    "duplicateRunnerCheck": {
+      "verdict": "fail",
+      "reason": "Two simultaneous Qwen runners at 4096 and 8192 exhausted Metal memory on this 8 GB host. The 8192 runner passed after the duplicate was unloaded."
+    }
+  },
+  "performance": {
+    "verdict": "measured_no_slo",
+    "note": "No product latency SLO exists yet, so these are baselines rather than a performance pass/fail gate.",
+    "default4096Runs": [
+      {
+        "condition": "first observed run",
+        "turnLatencyMs": [34816, 22354],
+        "totalLatencyMs": 57170,
+        "outputTokens": [461, 380]
+      },
+      {
+        "condition": "warm runner",
+        "turnLatencyMs": [8800, 11102],
+        "totalLatencyMs": 19902,
+        "outputTokens": [181, 207]
+      }
+    ],
+    "declared8192Runs": [
+      {
+        "condition": "single resident runner",
+        "turnLatencyMs": [18161, 11494],
+        "totalLatencyMs": 29655,
+        "outputTokens": [220, 180],
+        "turn1PromptTokensPerSecond": 250.06,
+        "turn1GenerationTokensPerSecond": 19.3,
+        "turn2PromptTokensPerSecond": 155.63,
+        "turn2GenerationTokensPerSecond": 19.29
+      },
+      {
+        "condition": "final automated served-context gate",
+        "turnLatencyMs": [24966, 18914],
+        "totalLatencyMs": 43880,
+        "outputTokens": [253, 243],
+        "turn1PromptTokensPerSecond": 196.45,
+        "turn1GenerationTokensPerSecond": 19.31,
+        "turn2PromptTokensPerSecond": 120.68,
+        "turn2GenerationTokensPerSecond": 15.71
+      }
+    ]
+  },
+  "cloudFunctionalConformance": {
+    "verdict": "pass",
+    "provider": "openai-codex",
+    "model": "gpt-5.6-luna",
+    "toolRoundTrip": true,
+    "assistantMessageShape": true,
+    "turnLatencyMs": [2401, 1381],
+    "totalLatencyMs": 3782,
+    "outputTokens": [18, 14],
+    "warning": "The openai-codex API ignores the configured maxTokens value, so output is not bounded by that setting."
+  },
+  "crossProviderConformance": {
+    "verdict": "pass",
+    "configKeys": ["codex-default", "local-qwen"],
+    "providers": ["openai-codex", "ollama"],
+    "models": ["gpt-5.6-luna", "qwen3:4b"],
+    "latencyMs": [1963, 41231],
+    "usageTotalTokens": [62, 521],
+    "requiredRuntimeShape": "pass",
+    "providerDifference": "Qwen returned text and thinking blocks; Codex returned text only.",
+    "sameCallingCode": true
+  }
+}

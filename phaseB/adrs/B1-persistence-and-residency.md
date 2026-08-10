@@ -80,31 +80,42 @@ so nothing new is needed in the API — only the discipline to use it.
 
 ## Decision 3 — storage shape: JSONB for content, columns for queries
 
-Message content is a discriminated union of block types owned by `pi-ai`,
-and it grows — `thinkingSignature` and `textSignature` were added to our
-accounting only after they caused a defect.
+Message content currently arrives as a discriminated union owned by
+`pi-ai`, and it grows — `thinkingSignature` and `textSignature` were added
+to our accounting only after they caused a defect. That dependency type is
+appropriate inside the runtime, but it cannot be the permanent database or
+public API contract: a package update must not redefine historical data.
 
-**Decision: content blocks in JSONB; columns for what is actually queried.**
+**Decision: a versioned product envelope in JSONB; columns for what is
+actually queried.** The write boundary maps the current `pi-ai` message into
+our envelope. Unknown provider blocks can be retained in a typed extension
+field, but raw provider payloads are off by default and inherit the same
+retention and erasure policy as message content.
 
 ```
 messages
   id            uuid pk
   conversation_id uuid fk
   seq           bigint          -- ordering within the conversation
+  schema_version smallint        -- version of our product envelope
   role          text            -- user | assistant | toolResult
-  content       jsonb           -- pi-ai content blocks, verbatim
+  content       jsonb           -- versioned product content envelope
   provider      text
   model         text
   config_key    text
   usage         jsonb           -- input/output/cacheRead/cacheWrite/cost
   created_at    timestamptz
-  superseded_by uuid null
+  supersedes_id uuid null        -- points backward; old rows never change
 ```
 
-Normalising the blocks would mean a migration on every `pi-ai` block-type
-addition, for a shape nothing queries into. Queries are by conversation, by
-time, by role, by model — all columns. Search is a separate index either
-way.
+`(conversation_id, seq)` is unique. Readers dispatch by `schema_version`;
+new code must read every version still present or migrate it explicitly.
+
+Normalising every block would mean a migration for shape nothing queries
+into. The versioned JSONB envelope keeps that flexibility without letting a
+dependency's TypeScript declaration become the product's durable contract.
+Queries are by conversation, time, role, and model — all columns. Search is
+a separate index either way.
 
 **The cost, stated plainly:** the database cannot enforce the content shape,
 so validation happens on write. Given this project's history with
@@ -114,8 +125,10 @@ test.
 
 ## Decision 4 — append-only
 
-Messages are immutable. An edit writes a new row and sets `superseded_by` on
-the old one. Deletion is an explicit retention operation, never an `UPDATE`.
+Messages are immutable. An edit writes a new row whose `supersedes_id`
+points to the previous row; the previous row is never updated. The current
+view selects the newest unsuperseded version. Deletion is an explicit
+retention operation, never an edit disguised as `UPDATE`.
 
 This is what makes the Phase G audit story possible at all: an audit log
 over mutable rows proves nothing, because the thing it attests to can have
@@ -169,10 +182,17 @@ A deleted message that is still retrievable by semantic search is a
 compliance failure, and it is the kind that stays invisible until an auditor
 goes looking.
 
-**Decision: deletion is one transaction across every derived store** —
-message rows, attachments on disk, pgvector embeddings, search index — and
-there is a test that erases content and then *searches for it* rather than
-only checking the table.
+Postgres, a filesystem/object store, pgvector, and a separate search engine
+cannot share one ACID transaction. Claiming otherwise would make the design
+impossible to implement.
+
+**Decision: erasure is a durable, convergent workflow.** One database
+transaction tombstones the content, makes every query/search path filter it
+immediately, and writes deletion jobs to an outbox. Idempotent workers remove
+attachments, embeddings, cached/provider payloads, and search entries. The
+job is complete only after reconciliation verifies every store and a
+retrieval-side test can no longer find the content. Failed deletions remain
+visible and retryable; they are never reported as complete.
 
 This is the same failure mode as `lessons.md` #6: a check placed where the
 evidence has already been removed proves nothing. Verify erasure from the
@@ -192,13 +212,27 @@ applies here — the auditable thing should be the readable thing.
 Migrations exist from the first table, because client deployments are
 upgraded in place and there is no opportunity to reset.
 
+## Decision 9 — the durability boundary
+
+The runtime remains database-free, but the server must durably journal state
+transitions before acknowledging them. A database outage therefore has two
+allowed outcomes: encrypted in-boundary spool with later idempotent replay,
+or a suspended run with `persistenceUnavailable`. "Conversation succeeded
+but its history disappeared" is not an allowed degraded mode.
+
+The journal is the source for persistence/audit consumers. Each event has a
+stable id; every consumer is idempotent and stores its checkpoint.
+
+## Decision 10 — completed messages and interrupted streams
+
+Streaming deltas are ephemeral UI events. The completed assistant message is
+the durable conversation record. If a stream is interrupted, the run stores
+terminal metadata (`cancelled`, `timeout`, or `error`) but does not invent an
+assistant message. If resumable drafts are added later, they live in a
+separate draft table and never masquerade as completed history.
+
 ## Open items
 
-- **Streaming and persistence.** A.1 has the runtime emit events and this
-  layer subscribe. When a stream is interrupted mid-message, is the partial
-  persisted? Persisting on completion only is simpler and loses work on a
-  dropped connection; a resumable draft row is friendlier and adds a state
-  nobody else models. Needs deciding with the UI (Phase D), not before.
 - **Multi-tenancy.** Single tenant per deployment is the default (ADR-003).
   If that ever changes, row-level security versus schema-per-tenant must be
   settled *before* the schema is fixed — retrofitting tenant isolation is
@@ -217,15 +251,21 @@ upgraded in place and there is no opportunity to reset.
       tests.
 - [ ] Schema and migrations for users, conversations, messages,
       attachments.
+- [ ] Stored messages use a versioned product envelope, with fixtures proving
+      old schema versions remain readable after a runtime dependency upgrade.
 - [ ] Message content validated on write, with a regression test for a
       malformed block.
 - [ ] Load path rebuilds the 1.8 anchor, and falls back to `estimated` when
       the anchored prefix is not fully loaded.
 - [ ] Append-only enforced, including the supersede path.
+- [ ] Durable journal/outbox with idempotent consumers; database-outage tests
+      prove runs are spooled or suspended, never silently unrecorded.
 - [ ] Residency inventory written, with a test asserting logs contain no
       prompt or completion content.
-- [ ] Erasure across message rows, attachments, embeddings and index —
-      verified *by searching for the erased content*.
+- [ ] Erasure saga across message rows, attachments, embeddings, cache, and
+      index, with retry/reconciliation and retrieval-side verification.
+- [ ] Interrupted streams persist terminal run metadata but no fabricated
+      assistant message.
 - [ ] Local embedding model wired; hosted embedding calls impossible in
       air-gapped mode.
 

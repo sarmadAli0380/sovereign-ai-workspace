@@ -109,6 +109,24 @@ the number is `anchored` or `estimated`. The UI can then show real context
 consumption rather than a guess, which is a genuine product feature that
 falls out of work already done.
 
+### Event audiences and redaction
+
+"One stream" means one causal protocol, not one unrestricted payload copied
+unchanged to every destination. The events are projected by audience:
+
+| audience | content policy |
+|---|---|
+| live UI | content needed to render the current authorized conversation |
+| conversation persistence | complete message content under the conversation's retention policy |
+| audit | identifiers, capability decision, timing, model, usage, and outcome only |
+| application logs/metrics | operational metadata only; no prompt, completion, tool arguments, or tool results |
+
+`tool_start.arguments` is content-bearing. It may be present in the
+authorized UI/persistence projection, but the audit projection stores only
+an argument hash and size unless a deployment explicitly defines a stricter
+regulated audit requirement. Redaction is schema-driven and tested; it is
+not a best-effort logging filter applied after serialization.
+
 ## Decision 4 — the model proposes, the policy disposes
 
 The security model, and the part that matters most for a product that runs
@@ -147,6 +165,12 @@ dispatcher, surfaced as an `isError` result so the model can react.
 
 **(e) Output and concurrency caps.** `maxToolResultChars` already exists
 (1.5). Add a cap on concurrent tool executions per run.
+
+**(f) Active-call cancellation and timeouts.** Cancellation must reach the
+provider request and every running tool, not only retry sleeps or the outer
+loop. Model calls and tools have finite configurable timeouts. A cancelled
+or timed-out operation emits a terminal event and is never appended to the
+conversation as if the assistant said it.
 
 **No built-in tool is enabled by default.** A deployment opts in, per
 capability, per role.
@@ -191,10 +215,18 @@ per-server capability ceilings. Needs design before MCP ships, not after.
 Phase B subscribes to the event stream and writes. The runtime holds no
 database handle.
 
-Two reasons. It keeps the runtime testable with no infrastructure, which is
-what made Phase 1's test suite worth having. And it makes persistence
-failure a separable concern — a client's database being briefly unavailable
-should degrade recording, not kill an in-flight conversation.
+The separation remains: it keeps the runtime testable with no infrastructure
+and prevents database concerns from entering model/tool control flow. But a
+persistence failure may **not** silently degrade recording. That contradicts
+the product's complete-history and audit promises.
+
+The server owns a durable event journal/outbox. Before acknowledging a run
+or a human approval, it durably records the corresponding state transition.
+If the primary database is unavailable, the deployment either writes to a
+bounded encrypted local spool inside the residency boundary or suspends the
+run with `persistenceUnavailable`. It never continues successfully while
+quietly dropping events. Replay into the UI and audit projections comes from
+that journal, using event ids for idempotency.
 
 ## What this deliberately does not build
 
@@ -226,16 +258,23 @@ should degrade recording, not kill an in-flight conversation.
       with no sink is unchanged, proven by the existing tests still passing.
 - [ ] `run()` with required `maxTurns`, cancellation, and event emission.
 - [ ] Event protocol defined as types, with a serializability test.
+- [ ] Audience-specific UI, persistence, audit, and log projections, with a
+      test proving tool arguments and message content cannot enter audit/log
+      records.
 - [ ] Capability declarations on `ToolHandler`, and a policy layer evaluated
       before `execute()`.
 - [ ] Workspace confinement with a symlink-escape test.
 - [ ] Per-tool timeouts, surfaced as `isError`.
+- [ ] Abort and timeout reach an active provider call and all running tools;
+      cancelled/error responses never become assistant history.
 - [ ] Approval suspend/resume round trip.
 - [ ] Built-in tools: file read/write, search, shell, HTTP — each behind its
       capability, none on by default.
 - [ ] MCP client, tools entering through the same registry and policy.
 - [ ] Streaming verified live against both providers, and the event-protocol
       degradation question answered.
+- [ ] Database outage test proves a run is durably spooled or suspended —
+      never acknowledged with missing history.
 
 ## Files this will change
 
