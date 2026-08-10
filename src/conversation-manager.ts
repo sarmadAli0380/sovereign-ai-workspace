@@ -22,6 +22,41 @@ import {
 } from "./truncation.ts";
 
 /**
+ * Clone the data-only message/schema graph while preserving symbol-keyed
+ * TypeBox metadata. `structuredClone()` drops TypeBox's symbol properties,
+ * and JSON cloning would do the same, so neither is safe for tool schemas.
+ */
+function cloneData<T>(value: T, seen = new Map<object, unknown>()): T {
+  if (typeof value !== "object" || value === null) return value;
+
+  const existing = seen.get(value);
+  if (existing !== undefined) return existing as T;
+
+  if (Array.isArray(value)) {
+    const copy: unknown[] = [];
+    seen.set(value, copy);
+    for (const item of value) copy.push(cloneData(item, seen));
+    return copy as T;
+  }
+
+  const copy = Object.create(Object.getPrototypeOf(value)) as object;
+  seen.set(value, copy);
+  for (const key of Reflect.ownKeys(value)) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (!descriptor) continue;
+    if ("value" in descriptor) descriptor.value = cloneData(descriptor.value, seen);
+    Object.defineProperty(copy, key, descriptor);
+  }
+  return copy as T;
+}
+
+function assertNonNegativeWholeNumber(name: string, value: number): void {
+  if (!Number.isFinite(value) || !Number.isInteger(value) || value < 0) {
+    throw new Error(`${name} must be a finite non-negative whole number, got ${value}.`);
+  }
+}
+
+/**
  * TUNABLE — not settled. The ADR explicitly left these open, to be revisited
  * against real usage data rather than copied blindly from precedent.
  *
@@ -71,6 +106,10 @@ export function resolveReserveTokens(
   contextWindow: number,
   requested: number = DEFAULT_RESERVE_TOKENS,
 ): number {
+  if (!Number.isFinite(contextWindow) || !Number.isInteger(contextWindow) || contextWindow <= 0) {
+    throw new Error(`contextWindow must be a finite positive whole number, got ${contextWindow}.`);
+  }
+  assertNonNegativeWholeNumber("reserveTokens", requested);
   return Math.min(requested, Math.floor(contextWindow * MAX_RESERVE_FRACTION));
 }
 
@@ -160,6 +199,7 @@ export function capToolResult(
   message: ToolResultMessage,
   maxChars: number,
 ): ToolResultMessage {
+  assertNonNegativeWholeNumber("maxToolResultChars", maxChars);
   let budget = maxChars;
   let didTruncate = false;
 
@@ -237,14 +277,21 @@ export class ConversationManager {
     // can ever exceed, disabling truncation entirely while every accessor
     // still reported success. Rejecting the input is the only place this
     // can be caught once.
-    if (!Number.isFinite(options.contextWindow)) {
+    if (
+      !Number.isFinite(options.contextWindow) ||
+      !Number.isInteger(options.contextWindow) ||
+      options.contextWindow <= 0
+    ) {
       throw new Error(
-        `contextWindow must be a finite number, got ${options.contextWindow}. ` +
+        `contextWindow must be a finite positive whole number, got ${options.contextWindow}. ` +
           `A non-finite window disables truncation rather than widening it.`,
       );
     }
-    if (options.reserveTokens !== undefined && !Number.isFinite(options.reserveTokens)) {
-      throw new Error(`reserveTokens must be a finite number, got ${options.reserveTokens}.`);
+    if (options.reserveTokens !== undefined) {
+      assertNonNegativeWholeNumber("reserveTokens", options.reserveTokens);
+    }
+    if (options.maxToolResultChars !== undefined) {
+      assertNonNegativeWholeNumber("maxToolResultChars", options.maxToolResultChars);
     }
 
     const reserve = resolveReserveTokens(
@@ -270,7 +317,7 @@ export class ConversationManager {
       // what gets sent while the cached cost stayed stale — and the doc on
       // `overheadTokens` promises they are fixed for this object's lifetime.
       // A copy is what makes that promise true rather than aspirational.
-      ...(options.tools !== undefined ? { tools: [...options.tools] } : {}),
+      ...(options.tools !== undefined ? { tools: cloneData(options.tools) } : {}),
     };
 
     // 1.8: the system prompt and tool schemas are sent on every request and
@@ -296,8 +343,11 @@ export class ConversationManager {
    * re-truncating the whole conversation.
    */
   append(message: Message): void {
+    // Own the stored value. Otherwise a caller can mutate a message after
+    // append and bypass both token accounting and tool-result capping.
+    const owned = cloneData(message);
     const toAppend =
-      message.role === "toolResult" ? capToolResult(message, this.maxToolResultChars) : message;
+      owned.role === "toolResult" ? capToolResult(owned, this.maxToolResultChars) : owned;
 
     const previous = this.context.messages;
     previous.push(toAppend);
@@ -382,12 +432,19 @@ export class ConversationManager {
    * snapshot is at least a coherent moment in time.
    */
   getHistory(): readonly Message[] {
-    return [...this.context.messages];
+    return cloneData(this.context.messages);
   }
 
-  /** What actually gets passed to pi-ai's `complete()`/`stream()`. */
+  /**
+   * What gets passed to pi-ai's `complete()`/`stream()`.
+   *
+   * Returned as an owned snapshot. Exposing the live object let callers add
+   * messages or mutate the system prompt/tool schemas without re-running
+   * truncation or recomputing the cached overhead, breaking the class's core
+   * budget invariant.
+   */
   getContext(): Context {
-    return this.context;
+    return cloneData(this.context);
   }
 
   /**

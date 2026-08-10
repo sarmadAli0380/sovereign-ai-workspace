@@ -12,11 +12,37 @@
 
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
+import { Writable } from "node:stream";
 import type { AuthEvent, AuthInteraction, AuthPrompt } from "@earendil-works/pi-ai";
 
 export function terminalAuthInteraction(): AuthInteraction {
   return {
     async prompt(prompt: AuthPrompt): Promise<string> {
+      if (prompt.type === "secret") {
+        // Readline echoes typed characters by writing them to its configured
+        // output. Give it a muted sink and render only our own prompt/newline,
+        // so long-lived API keys do not appear in terminal scrollback,
+        // recordings, or shared-session logs.
+        const muted = new Writable({
+          write(_chunk, _encoding, callback) {
+            callback();
+          },
+        });
+        const rl = createInterface({
+          input: stdin,
+          output: muted,
+          terminal: Boolean(stdin.isTTY),
+        });
+        stdout.write(`\n${prompt.message}\n> `);
+        try {
+          const answer = (await rl.question("")).trim();
+          stdout.write("\n");
+          return answer;
+        } finally {
+          rl.close();
+        }
+      }
+
       const rl = createInterface({ input: stdin, output: stdout });
       try {
         if (prompt.type === "select") {
@@ -35,10 +61,8 @@ export function terminalAuthInteraction(): AuthInteraction {
           }
         }
 
-        // "text", "secret" and "manual_code" all read one line. Terminal
-        // echo is left on even for "secret": the values here are pasted
-        // one-time codes, and silently swallowing keystrokes reads as a
-        // hang. Nothing long-lived is typed at this prompt.
+        // "text" and "manual_code" read one visible line. Secret input is
+        // handled above without echo.
         return (await rl.question(`\n${prompt.message}\n> `)).trim();
       } finally {
         rl.close();

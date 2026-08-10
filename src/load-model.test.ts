@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createModels } from "@earendil-works/pi-ai";
 import { fauxProvider } from "@earendil-works/pi-ai/providers/faux";
 import { loadModel } from "./load-model.ts";
@@ -94,4 +98,17 @@ test("REGRESSION: a __proto__ key does not poison the parsed config", () => {
   // the entry vanished from Object.keys and every other entry inherited it.
   assert.deepEqual(Object.keys(config).sort(), ["__proto__", "real"]);
   assert.equal(config["real"]?.provider, "p");
+});
+
+test("REGRESSION: an unreadable local-provider path is not treated as absent", () => {
+  const directory = mkdtempSync(join(tmpdir(), "harness-provider-config-"));
+  const moduleUrl = new URL("./load-model.ts", import.meta.url).href;
+  const script = `import { getModels } from ${JSON.stringify(moduleUrl)}; getModels();`;
+  const result = spawnSync(process.execPath, ["--input-type=module", "-e", script], {
+    encoding: "utf8",
+    env: { ...process.env, HARNESS_LOCAL_PROVIDERS: directory },
+  });
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /could not be read \(EISDIR\)/);
 });

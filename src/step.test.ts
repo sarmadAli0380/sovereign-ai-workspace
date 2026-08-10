@@ -176,17 +176,65 @@ test("a provider error surfaces as an error result, not an exception", async () 
   // through pi-ai, as an AssistantMessage with stopReason "error".
   const { models, model } = fixture([]);
 
+  const cm = conversation();
   const outcome = await step({
     models,
     model,
     entry,
     configKey: "faux-default",
-    conversation: conversation(),
+    conversation: cm,
   });
 
   assert.equal(outcome.result.message.stopReason, "error");
   assert.equal(outcome.done, true);
   assert.equal(outcome.toolCalls.length, 0);
+  assert.equal(cm.getHistory().length, 1, "operational errors must not become assistant history");
+});
+
+test("an aborted provider call is not appended as an assistant turn", async () => {
+  const { models, model } = fixture();
+  const cm = conversation();
+  const aborted = {
+    ...reply(""),
+    content: [],
+    stopReason: "aborted",
+  } satisfies AssistantMessage;
+  const broken = { ...models, complete: async () => aborted } as unknown as Models;
+
+  const outcome = await step({
+    models: broken,
+    model,
+    entry,
+    configKey: "faux-default",
+    conversation: cm,
+  });
+
+  assert.equal(outcome.result.message.stopReason, "aborted");
+  assert.equal(outcome.done, true);
+  assert.equal(cm.getHistory().length, 1);
+});
+
+test("a failing conversation boundary still honors step's no-throw contract", async () => {
+  const { models, model } = fixture();
+  const cm = conversation();
+  const brokenConversation = {
+    ...cm,
+    getContext: () => {
+      throw new Error("conversation storage unavailable");
+    },
+  } as unknown as ConversationManager;
+
+  const outcome = await step({
+    models,
+    model,
+    entry,
+    configKey: "faux-default",
+    conversation: brokenConversation,
+  });
+
+  assert.equal(outcome.result.message.stopReason, "error");
+  assert.equal(outcome.done, true);
+  assert.match(outcome.result.message.errorMessage ?? "", /conversation storage unavailable/);
 });
 
 test("PROPERTY: step never throws, whatever the dependency does", async () => {

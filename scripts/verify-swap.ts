@@ -13,11 +13,14 @@
  */
 
 import { loadConfig } from "../src/config.ts";
+import {
+  assistantMessageFingerprint,
+  collectAssistantMessageIssues,
+} from "../src/conformance.ts";
 import { getModels, loadModel } from "../src/load-model.ts";
 import { complete } from "../src/complete.ts";
 import { validateContext } from "../src/validate-context.ts";
 import { ConversationManager } from "../src/conversation-manager.ts";
-import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { HarnessResult } from "../src/types.ts";
 
 const keyA = process.argv[2];
@@ -46,28 +49,10 @@ async function run(configKey: string): Promise<HarnessResult> {
   validateContext(conversation.getContext(), configKey, Object.keys(config));
 
   return complete(models, model, entry, conversation.getContext(), configKey, {
+    timeoutMs: 120_000,
     onRetry: (attempt, max, delayMs, error) =>
       console.log(`  [${configKey}] transient failure (${error}) — retry ${attempt}/${max} in ${delayMs}ms`),
   });
-}
-
-/** Structural fingerprint: field names and types, no values. */
-function fingerprint(message: AssistantMessage): Record<string, string> {
-  const shape: Record<string, string> = {};
-  for (const [key, value] of Object.entries(message)) {
-    shape[key] = Array.isArray(value) ? "array" : value === null ? "null" : typeof value;
-  }
-  for (const [key, value] of Object.entries(message.usage)) {
-    shape[`usage.${key}`] = typeof value === "object" ? "object" : typeof value;
-  }
-  // Must read the ACTUAL type, not assert the expected one — hardcoding
-  // "number" here made a `cost.total` of `"n/a"` compare equal to a real
-  // number, so a malformed response passed the diff clean.
-  for (const [key, value] of Object.entries(message.usage.cost)) {
-    shape[`usage.cost.${key}`] = value === null ? "null" : typeof value;
-  }
-  shape["content[].types"] = [...new Set(message.content.map((b) => b.type))].sort().join("|");
-  return shape;
 }
 
 function report(result: HarnessResult): void {
@@ -96,8 +81,23 @@ report(b);
 
 // --- structural diff
 
-const shapeA = fingerprint(a.message);
-const shapeB = fingerprint(b.message);
+const validationFailures = [
+  ...collectAssistantMessageIssues(a.message, { requireSuccess: true, requireText: true }).map(
+    (failure) => `${keyA}: ${failure}`,
+  ),
+  ...collectAssistantMessageIssues(b.message, { requireSuccess: true, requireText: true }).map(
+    (failure) => `${keyB}: ${failure}`,
+  ),
+];
+
+if (validationFailures.length > 0) {
+  console.error(`\n✗ Runtime conformance failures:`);
+  for (const failure of validationFailures) console.error(`  - ${failure}`);
+  process.exit(1);
+}
+
+const shapeA = assistantMessageFingerprint(a.message as unknown as Record<string, unknown>);
+const shapeB = assistantMessageFingerprint(b.message as unknown as Record<string, unknown>);
 const allKeys = [...new Set([...Object.keys(shapeA), ...Object.keys(shapeB)])].sort();
 
 const differences: string[] = [];
@@ -117,47 +117,19 @@ console.log(
     : `providers: ${a.message.provider} vs ${b.message.provider} — genuine provider swap.`,
 );
 
+if (sameProvider) {
+  console.error(
+    `\n✗ This command is the cross-provider proof, but both keys resolved to "${a.message.provider}".`,
+  );
+  process.exit(1);
+}
+
 if (differences.length > 0) {
   console.log(`\ndifferences (${differences.length}):`);
   for (const line of differences) console.log(line);
   // Optional fields legitimately vary between providers (e.g. `reasoning` in
   // usage, `responseId`). Report them rather than failing outright — the
   // required core is checked below.
-}
-
-const requiredFields = [
-  "role",
-  "content",
-  "api",
-  "provider",
-  "model",
-  "usage",
-  "stopReason",
-  "timestamp",
-  "usage.input",
-  "usage.output",
-  "usage.totalTokens",
-  "usage.cost.total",
-];
-
-const missing = requiredFields.filter((f) => shapeA[f] === undefined || shapeB[f] === undefined);
-
-if (missing.length > 0) {
-  console.error(`\n✗ Required fields missing from one or both responses: ${missing.join(", ")}`);
-  process.exit(1);
-}
-
-// A failed call carries every required field too, so field presence alone
-// would pass a network error as a conforming response.
-const failed = [a, b].filter(
-  (r) => r.message.stopReason === "error" || r.message.stopReason === "aborted",
-);
-if (failed.length > 0) {
-  console.error(`\n✗ Call did not succeed for: ${failed.map((r) => r.configKey).join(", ")}`);
-  for (const r of failed) {
-    console.error(`  ${r.configKey}: ${r.message.stopReason} — ${r.message.errorMessage ?? "no detail"}`);
-  }
-  process.exit(1);
 }
 
 console.log(`\n✓ Both responses carry every required AssistantMessage field with matching types.`);

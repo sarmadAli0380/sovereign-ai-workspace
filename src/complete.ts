@@ -52,6 +52,8 @@ export const DEFAULT_RETRY_POLICY: RetryPolicy = {
 export interface CompleteOptions {
   policy?: RetryPolicy;
   signal?: AbortSignal;
+  /** Optional provider-request timeout. Forwarded to pi-ai's StreamOptions. */
+  timeoutMs?: number;
   /** Called before each backoff sleep, so scripts can show what happened. */
   onRetry?: (attempt: number, maxAttempts: number, delayMs: number, error: string) => void;
 }
@@ -67,8 +69,24 @@ export async function complete(
 ): Promise<HarnessResult> {
   const started = Date.now();
 
+  if (
+    options.timeoutMs !== undefined &&
+    (!Number.isFinite(options.timeoutMs) || options.timeoutMs <= 0)
+  ) {
+    throw new TypeError(`timeoutMs must be a finite positive number, got ${options.timeoutMs}.`);
+  }
+
   const message: AssistantMessage = await retryAssistantCall(
-    () => models.complete(model, context, callOptions(entry)),
+    () =>
+      models.complete(model, context, {
+        ...callOptions(entry),
+        // retryAssistantCall uses the signal for backoff sleeps, but it does
+        // not inject it into the provider request. Both are needed: without
+        // this, cancellation only worked between attempts while an active
+        // request could continue until the provider's own timeout.
+        ...(options.signal ? { signal: options.signal } : {}),
+        ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
+      }),
     options.policy ?? DEFAULT_RETRY_POLICY,
     options.signal,
     {

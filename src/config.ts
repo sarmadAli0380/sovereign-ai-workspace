@@ -120,8 +120,13 @@ function assertEntry(key: string, value: unknown): ConfigEntry {
   if (typeof entry["modelId"] !== "string" || entry["modelId"] === "") {
     problems.push("`modelId` must be a non-empty string");
   }
-  if (typeof entry["maxTokens"] !== "number" || !Number.isFinite(entry["maxTokens"]) || entry["maxTokens"] <= 0) {
-    problems.push("`maxTokens` must be a positive number");
+  if (
+    typeof entry["maxTokens"] !== "number" ||
+    !Number.isFinite(entry["maxTokens"]) ||
+    !Number.isInteger(entry["maxTokens"]) ||
+    entry["maxTokens"] <= 0
+  ) {
+    problems.push("`maxTokens` must be a positive whole number");
   }
   if (
     entry["temperature"] !== undefined &&
@@ -134,9 +139,17 @@ function assertEntry(key: string, value: unknown): ConfigEntry {
     entry["contextWindow"] !== undefined &&
     (typeof entry["contextWindow"] !== "number" ||
       !Number.isFinite(entry["contextWindow"]) ||
+      !Number.isInteger(entry["contextWindow"]) ||
       entry["contextWindow"] <= 0)
   ) {
-    problems.push("`contextWindow` must be a positive number when present");
+    problems.push("`contextWindow` must be a positive whole number when present");
+  }
+  if (
+    typeof entry["maxTokens"] === "number" &&
+    typeof entry["contextWindow"] === "number" &&
+    entry["maxTokens"] > entry["contextWindow"]
+  ) {
+    problems.push("`maxTokens` cannot exceed `contextWindow`");
   }
   if (entry["transport"] !== undefined && !VALID_TRANSPORTS.has(String(entry["transport"]))) {
     problems.push(

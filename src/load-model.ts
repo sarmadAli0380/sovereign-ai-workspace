@@ -156,8 +156,13 @@ function registerLocalProviders(models: MutableModels): void {
   let raw: string;
   try {
     raw = readFileSync(LOCAL_PROVIDERS_PATH, "utf8");
-  } catch {
-    return;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw new HarnessError(
+      "invalidContext",
+      `Local provider config ${LOCAL_PROVIDERS_PATH} exists but could not be read ` +
+        `(${(error as NodeJS.ErrnoException).code ?? "unknown error"}).`,
+    );
   }
 
   let parsed: unknown;

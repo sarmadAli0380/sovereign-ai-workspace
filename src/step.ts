@@ -102,13 +102,17 @@ export interface StepResult {
 export async function step(deps: StepDeps): Promise<StepResult> {
   const { models, model, entry, configKey, conversation, registry, options } = deps;
 
-  const failed = (error: unknown, latencyMs = 0): StepResult => ({
+  const failed = (
+    error: unknown,
+    latencyMs = 0,
+    fallbackKind: "invalidContext" | "providerError" = "providerError",
+  ): StepResult => ({
     result: errorResult({
       error:
         error instanceof HarnessError
           ? error
           : new HarnessError(
-              "providerError",
+              fallbackKind,
               error instanceof Error ? error.message : String(error),
             ),
       configKey,
@@ -121,12 +125,12 @@ export async function step(deps: StepDeps): Promise<StepResult> {
     done: true,
   });
 
-  const context: Context = conversation.getContext();
-
+  let context: Context;
   try {
+    context = conversation.getContext();
     validateContext(context, configKey, deps.knownConfigKeys);
   } catch (error) {
-    return failed(error);
+    return failed(error, 0, "invalidContext");
   }
 
   // `complete()` already retries transient failures and surfaces provider
@@ -141,10 +145,18 @@ export async function step(deps: StepDeps): Promise<StepResult> {
     return failed(error, Date.now() - started);
   }
 
-  conversation.append(result.message);
-
-  if (result.message.stopReason === "error") {
+  // Operational failures are run state, not conversation content. Appending
+  // them made a later retry send a synthetic/provider error back to the
+  // model as if it were a real assistant turn, and made the UI/persistence
+  // layer treat an outage as something the assistant said.
+  if (result.message.stopReason === "error" || result.message.stopReason === "aborted") {
     return { result, toolCalls: [], toolResults: [], done: true };
+  }
+
+  try {
+    conversation.append(result.message);
+  } catch (error) {
+    return failed(error, result.latencyMs, "invalidContext");
   }
 
   const toolCalls = result.message.content.filter(
@@ -166,8 +178,16 @@ export async function step(deps: StepDeps): Promise<StepResult> {
   // an `isError` result (1.6, decision 2), so a failing tool continues the
   // exchange rather than ending it. The model gets to see the error and
   // react, which is the whole point of that decision.
-  const toolResults = await dispatchToolCalls(toolCalls, registry);
-  conversation.appendAll(toolResults);
+  let toolResults: ToolResultMessage[];
+  try {
+    toolResults = await dispatchToolCalls(toolCalls, registry);
+    conversation.appendAll(toolResults);
+  } catch (error) {
+    // dispatchToolCalls is designed never to reject, but the conversation's
+    // pluggable truncation strategy can. Keep step()'s public no-throw
+    // contract true across that boundary as well.
+    return failed(error, result.latencyMs, "invalidContext");
+  }
 
   return { result, toolCalls, toolResults, done: false };
 }

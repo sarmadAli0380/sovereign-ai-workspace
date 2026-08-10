@@ -14,13 +14,17 @@
  */
 
 import { Type } from "@earendil-works/pi-ai";
-import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { loadConfig } from "../src/config.ts";
+import {
+  collectAssistantMessageIssues,
+  inspectOllamaRuntime,
+  type OllamaRuntimeObservation,
+} from "../src/conformance.ts";
 import { getModels, loadModel } from "../src/load-model.ts";
 import { ConversationManager } from "../src/conversation-manager.ts";
 import { estimateContextTokens } from "../src/truncation.ts";
 import { ToolRegistry } from "../src/tool-registry.ts";
-import { step, type StepDeps } from "../src/step.ts";
+import { step, type StepDeps, type StepResult } from "../src/step.ts";
 import type { HarnessResult } from "../src/types.ts";
 
 const configKey = process.argv[2] ?? "codex-default";
@@ -113,6 +117,7 @@ const deps: StepDeps = {
   registry,
   knownConfigKeys: Object.keys(config),
   options: {
+    timeoutMs: 120_000,
     onRetry: (attempt, max, delayMs, error) =>
       console.log(`  transient failure (${error}) — retry ${attempt}/${max} in ${delayMs}ms`),
   },
@@ -135,42 +140,19 @@ function describe(label: string, result: HarnessResult): void {
   if (text) console.log(`text:        ${text.slice(0, 300)}`);
 }
 
-/** Structural conformity checks — shape, not wording. */
-function checkShape(m: AssistantMessage): string[] {
-  const failures: string[] = [];
-
-  // Checked FIRST and deliberately: a failed call still carries every
-  // required field, so a pure field-presence check reports a network error
-  // or an auth failure as a conforming response. Verifying the shape of an
-  // error message proves nothing about the provider.
-  if (m.stopReason === "error" || m.stopReason === "aborted") {
-    failures.push(`call did not succeed (stopReason: ${m.stopReason}): ${m.errorMessage ?? "no detail"}`);
-  }
-
-  if (m.role !== "assistant") failures.push("role is not 'assistant'");
-  if (!Array.isArray(m.content)) failures.push("content is not an array");
-  if (typeof m.stopReason !== "string") failures.push("stopReason missing");
-  if (typeof m.usage?.input !== "number") failures.push("usage.input missing");
-  if (typeof m.usage?.output !== "number") failures.push("usage.output missing");
-  if (typeof m.usage?.totalTokens !== "number") failures.push("usage.totalTokens missing");
-  if (typeof m.usage?.cost?.total !== "number") failures.push("usage.cost.total missing");
-  if (typeof m.provider !== "string") failures.push("provider missing");
-  if (typeof m.model !== "string") failures.push("model missing");
-  if (typeof m.timestamp !== "number") failures.push("timestamp missing");
-  return failures;
-}
-
 // The turn cap lives here, in the caller, where it is visible — `step()`
 // has no opinion about when to stop. Two is enough to exercise a tool
 // round trip; a real application would choose its own.
 const MAX_TURNS = 4;
 const results: HarnessResult[] = [];
+const outcomes: StepResult[] = [];
 let turn = 0;
 let outcome = await step(deps);
 
 for (;;) {
   turn += 1;
   results.push(outcome.result);
+  outcomes.push(outcome);
   describe(turn === 1 ? "turn 1" : `turn ${turn} (after tool results)`, outcome.result);
 
   if (turn === 1) console.log(`\ntool calls requested: ${outcome.toolCalls.length}`);
@@ -182,13 +164,53 @@ for (;;) {
   outcome = await step(deps);
 }
 
-const exercisedTools = results.length > 1;
+const first = outcomes[0];
+const final = outcomes.at(-1);
+const exercisedTools =
+  first !== undefined &&
+  first.result.message.stopReason === "toolUse" &&
+  first.toolCalls.length > 0 &&
+  first.toolResults.length === first.toolCalls.length &&
+  first.toolResults.every((toolResult) => toolResult.isError !== true) &&
+  results.length > 1;
+const completedAnswer =
+  final !== undefined &&
+  final.done &&
+  (final.result.message.stopReason === "stop" || final.result.message.stopReason === "length") &&
+  collectAssistantMessageIssues(final.result.message, { requireText: true }).length === 0;
 
 // --- report
 
 const failures = results.flatMap((r, i) =>
-  checkShape(r.message).map((f) => `turn ${i + 1}: ${f}`),
+  collectAssistantMessageIssues(r.message, {
+    requireSuccess: true,
+    ...(i === 0 ? { requireToolCall: true } : {}),
+  }).map((failure) => `turn ${i + 1}: ${failure}`),
 );
+let ollamaRuntime: OllamaRuntimeObservation | undefined;
+if (entry.provider === "ollama") {
+  try {
+    const processUrl = new URL("/api/ps", model.baseUrl);
+    const response = await fetch(processUrl, { signal: AbortSignal.timeout(5_000) });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    ollamaRuntime = inspectOllamaRuntime(await response.json(), model.id, contextWindow);
+    failures.push(...ollamaRuntime.issues.map((issue) => `deployment: ${issue}`));
+  } catch (error) {
+    failures.push(
+      `deployment: could not verify Ollama's served context (${error instanceof Error ? error.message : String(error)})`,
+    );
+  }
+}
+if (!exercisedTools) {
+  failures.push(
+    "tool round-trip was not completed: expected a successful toolUse turn, matching tool results, and a follow-up model turn",
+  );
+}
+if (!completedAnswer) {
+  failures.push(
+    `tool round-trip did not finish with a text answer before the ${MAX_TURNS}-turn cap`,
+  );
+}
 
 console.log(`\n=== summary ===`);
 console.log(`messages in context: ${conversation.getHistory().length}`);
@@ -210,6 +232,14 @@ console.log(
 );
 console.log(`  of which overhead: ${conversation.getOverheadTokens()} (system prompt + tool schemas)`);
 console.log(`tool call round-trip: ${exercisedTools ? "exercised" : "NOT exercised (model did not call the tool)"}`);
+if (ollamaRuntime?.contextLength !== undefined) {
+  console.log(
+    `served context:       ${ollamaRuntime.contextLength}` +
+      (ollamaRuntime.sizeVramBytes !== undefined
+        ? ` (${(ollamaRuntime.sizeVramBytes / 1_000_000_000).toFixed(2)} GB resident)`
+        : ""),
+  );
+}
 
 if (failures.length > 0) {
   console.error(`\n✗ Structural conformity failures:`);

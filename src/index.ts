@@ -33,6 +33,13 @@ export {
 } from "./config.ts";
 export { callOptions, getModels, loadModel, type ResolvedModel } from "./load-model.ts";
 export { complete, DEFAULT_RETRY_POLICY, type CompleteOptions } from "./complete.ts";
+export {
+  assistantMessageFingerprint,
+  collectAssistantMessageIssues,
+  inspectOllamaRuntime,
+  type AssistantConformanceOptions,
+  type OllamaRuntimeObservation,
+} from "./conformance.ts";
 
 // 1.7 — one transition of a conversation. Deliberately not a loop: the
 // caller owns iteration, and this is the one place that turns a failure

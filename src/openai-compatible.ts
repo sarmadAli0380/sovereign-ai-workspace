@@ -42,11 +42,11 @@ export interface OpenAICompatibleProviderSpec {
   models: OpenAICompatibleModelSpec[];
   name?: string;
   /**
-   * API key, when the server wants one. Local servers usually don't, but
-   * `resolve()` must still return a non-undefined result or pi-ai treats the
-   * provider as unconfigured — see below.
+   * Environment variable holding the API key, when the server wants one.
+   * Secrets are deliberately referenced rather than embedded because this
+   * declaration is a tracked JSON file.
    */
-  apiKey?: string;
+  apiKeyEnv?: string;
   /**
    * Per-provider compat overrides merged over pi-ai's auto-detection.
    *
@@ -106,8 +106,12 @@ export function parseLocalProviders(
   const problems: string[] = [];
   const specs: OpenAICompatibleProviderSpec[] = [];
 
+  const isPlainObject = (value: unknown): value is Record<string, unknown> =>
+    typeof value === "object" && value !== null && !Array.isArray(value);
+
   for (const [id, value] of Object.entries(raw)) {
     const where = `provider "${id}"`;
+    const problemCountBeforeProvider = problems.length;
 
     if (typeof value !== "object" || value === null || Array.isArray(value)) {
       problems.push(`${where}: must be an object, got ${value === null ? "null" : typeof value}`);
@@ -119,9 +123,32 @@ export function parseLocalProviders(
 
     if (typeof spec["baseUrl"] !== "string" || !spec["baseUrl"].trim()) {
       problems.push(`${where}: \`baseUrl\` must be a non-empty string`);
+    } else {
+      try {
+        const url = new URL(spec["baseUrl"]);
+        if (url.protocol !== "http:" && url.protocol !== "https:") {
+          problems.push(`${where}: \`baseUrl\` must use http or https`);
+        }
+      } catch {
+        problems.push(`${where}: \`baseUrl\` must be a valid absolute URL`);
+      }
     }
 
-    const known = new Set(["baseUrl", "models", "name", "apiKey", "compat"]);
+    if (spec["name"] !== undefined && (typeof spec["name"] !== "string" || !spec["name"].trim())) {
+      problems.push(`${where}: \`name\` must be a non-empty string when present`);
+    }
+    if (
+      spec["apiKeyEnv"] !== undefined &&
+      (typeof spec["apiKeyEnv"] !== "string" ||
+        !/^[A-Za-z_][A-Za-z0-9_]*$/.test(spec["apiKeyEnv"]))
+    ) {
+      problems.push(`${where}: \`apiKeyEnv\` must name a valid environment variable`);
+    }
+    if (spec["compat"] !== undefined && !isPlainObject(spec["compat"])) {
+      problems.push(`${where}: \`compat\` must be an object when present`);
+    }
+
+    const known = new Set(["baseUrl", "models", "name", "apiKeyEnv", "compat"]);
     for (const key of Object.keys(spec)) {
       if (!known.has(key)) {
         // `id` is called out separately: it is not merely unread, it used to
@@ -129,6 +156,8 @@ export function parseLocalProviders(
         problems.push(
           key === "id"
             ? `${where}: \`id\` is taken from the object key, not the entry — remove it`
+            : key === "apiKey"
+              ? `${where}: inline \`apiKey\` is not allowed in tracked configuration — use \`apiKeyEnv\``
             : `${where}: unknown field \`${key}\` — nothing reads it (typo?)`,
         );
       }
@@ -143,6 +172,7 @@ export function parseLocalProviders(
       problems.push(`${where}: \`models\` is empty — the provider would have nothing to serve`);
     }
 
+    const modelIds = new Set<string>();
     for (const [index, model] of models.entries()) {
       const at = `${where} model[${index}]`;
       if (typeof model !== "object" || model === null || Array.isArray(model)) {
@@ -153,15 +183,41 @@ export function parseLocalProviders(
 
       if (typeof m["id"] !== "string" || !m["id"].trim()) {
         problems.push(`${at}: \`id\` must be a non-empty string`);
+      } else if (modelIds.has(m["id"])) {
+        problems.push(`${at}: duplicate model id "${m["id"]}"`);
+      } else {
+        modelIds.add(m["id"]);
       }
       for (const field of ["contextWindow", "maxTokens"]) {
         const raw = m[field];
-        if (typeof raw !== "number" || !Number.isFinite(raw) || raw <= 0) {
+        if (typeof raw !== "number" || !Number.isFinite(raw) || !Number.isInteger(raw) || raw <= 0) {
           problems.push(
-            `${at}: \`${field}\` must be a finite positive number, got ${
+            `${at}: \`${field}\` must be a finite positive whole number, got ${
               raw === undefined ? "nothing (typo?)" : JSON.stringify(raw)
             }`,
           );
+        }
+      }
+      if (
+        typeof m["contextWindow"] === "number" &&
+        typeof m["maxTokens"] === "number" &&
+        m["maxTokens"] > m["contextWindow"]
+      ) {
+        problems.push(`${at}: \`maxTokens\` cannot exceed \`contextWindow\``);
+      }
+      if (m["name"] !== undefined && (typeof m["name"] !== "string" || !m["name"].trim())) {
+        problems.push(`${at}: \`name\` must be a non-empty string when present`);
+      }
+      if (m["reasoning"] !== undefined && typeof m["reasoning"] !== "boolean") {
+        problems.push(`${at}: \`reasoning\` must be a boolean when present`);
+      }
+      if (m["input"] !== undefined) {
+        if (
+          !Array.isArray(m["input"]) ||
+          m["input"].length === 0 ||
+          m["input"].some((kind) => kind !== "text" && kind !== "image")
+        ) {
+          problems.push(`${at}: \`input\` must be a non-empty array containing only "text" or "image"`);
         }
       }
 
@@ -180,7 +236,7 @@ export function parseLocalProviders(
       }
     }
 
-    if (problems.length === 0) {
+    if (problems.length === problemCountBeforeProvider) {
       specs.push({ ...(spec as Omit<OpenAICompatibleProviderSpec, "id">), id });
     }
   }
@@ -229,9 +285,18 @@ export function openAICompatibleProvider(spec: OpenAICompatibleProviderSpec): Pr
       apiKey: {
         name: `${spec.name ?? spec.id} (local)`,
         async resolve() {
+          const configured = spec.apiKeyEnv
+            ? process.env[spec.apiKeyEnv]?.trim()
+            : undefined;
+          if (spec.apiKeyEnv && !configured) {
+            throw new HarnessError(
+              "invalidContext",
+              `Provider "${spec.id}" requires environment variable ${spec.apiKeyEnv}, but it is not set.`,
+            );
+          }
           return {
-            auth: { apiKey: spec.apiKey ?? "local" },
-            source: spec.apiKey ? "config" : "keyless local server",
+            auth: { apiKey: configured ?? "local" },
+            source: configured ? `environment (${spec.apiKeyEnv})` : "keyless local server",
           };
         },
       },

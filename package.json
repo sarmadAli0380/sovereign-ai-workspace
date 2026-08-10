@@ -4,6 +4,9 @@
   "private": true,
   "type": "module",
   "description": "Phase 1 model-agnostic LLM harness, built on @earendil-works/pi-ai",
+  "engines": {
+    "node": ">=24"
+  },
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "node --test",

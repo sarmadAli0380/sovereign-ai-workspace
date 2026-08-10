@@ -62,6 +62,30 @@ test("rejects a non-positive maxTokens", () => {
   );
 });
 
+test("rejects fractional token limits and windows", () => {
+  assert.throws(
+    () => parseConfig({ bad: { provider: "p", modelId: "m", maxTokens: 1.5 } }),
+    /maxTokens.*whole number/,
+  );
+  assert.throws(
+    () =>
+      parseConfig({
+        bad: { provider: "p", modelId: "m", maxTokens: 1, contextWindow: 8.5 },
+      }),
+    /contextWindow.*whole number/,
+  );
+});
+
+test("rejects maxTokens larger than the configured context window", () => {
+  assert.throws(
+    () =>
+      parseConfig({
+        bad: { provider: "p", modelId: "m", maxTokens: 9, contextWindow: 8 },
+      }),
+    /maxTokens.*cannot exceed.*contextWindow/,
+  );
+});
+
 test("rejects an empty config", () => {
   assert.throws(() => parseConfig({}), HarnessError);
 });

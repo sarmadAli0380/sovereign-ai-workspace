@@ -35,7 +35,7 @@ test("REGRESSION: a typo'd field is rejected, not silently dropped", () => {
 });
 
 test("non-finite and non-positive numbers are rejected", () => {
-  for (const bad of [0, -1, "8192", null]) {
+  for (const bad of [0, -1, 1.5, "8192", null]) {
     assert.throws(
       () =>
         parseLocalProviders(
@@ -51,6 +51,72 @@ test("non-finite and non-positive numbers are rejected", () => {
       `contextWindow ${JSON.stringify(bad)} must be rejected`,
     );
   }
+});
+
+test("validates optional provider and model fields from JSON", () => {
+  assert.throws(
+    () =>
+      parseLocalProviders(
+        {
+          p: {
+            baseUrl: "not-a-url",
+            name: 123,
+            apiKey: "tracked-secret",
+            compat: "oops",
+            models: [
+              {
+                id: "m",
+                contextWindow: 8_192,
+                maxTokens: 2_048,
+                name: 9,
+                reasoning: "yes",
+                input: "text",
+              },
+            ],
+          },
+        },
+        "t",
+      ),
+    (error: unknown) => {
+      const message = error instanceof Error ? error.message : String(error);
+      return ["valid absolute URL", "name", "apiKeyEnv", "compat", "reasoning", "input"].every(
+        (part) => message.includes(part),
+      );
+    },
+  );
+});
+
+test("rejects duplicate model ids and output limits larger than the window", () => {
+  assert.throws(
+    () =>
+      parseLocalProviders(
+        {
+          p: {
+            baseUrl: "http://localhost:1/v1",
+            models: [
+              { id: "m", contextWindow: 10, maxTokens: 11 },
+              { id: "m", contextWindow: 10, maxTokens: 5 },
+            ],
+          },
+        },
+        "t",
+      ),
+    /maxTokens.*cannot exceed.*duplicate model id/s,
+  );
+});
+
+test("accepts an environment reference instead of an inline API key", () => {
+  const [spec] = parseLocalProviders(
+    {
+      gateway: {
+        baseUrl: "https://gateway.internal/v1",
+        apiKeyEnv: "INTERNAL_GATEWAY_TOKEN",
+        models: [{ id: "m", contextWindow: 8_192, maxTokens: 2_048 }],
+      },
+    },
+    "t",
+  );
+  assert.equal(spec?.apiKeyEnv, "INTERNAL_GATEWAY_TOKEN");
 });
 
 test("malformed shapes report the problem instead of crashing downstream", () => {

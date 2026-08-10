@@ -85,6 +85,20 @@ test("caps an explicitly requested reserve too", () => {
   assert.equal(cm.getBudgetTokens(), 4_000 - 1_000);
 });
 
+test("rejects a negative reserve instead of widening the context window", () => {
+  assert.throws(
+    () => new ConversationManager({ contextWindow: 100, reserveTokens: -50 }),
+    /reserveTokens must be a finite non-negative whole number/,
+  );
+});
+
+test("rejects an unusable tool-result cap", () => {
+  assert.throws(
+    () => new ConversationManager({ contextWindow: 100, maxToolResultChars: Number.NaN }),
+    /maxToolResultChars must be a finite non-negative whole number/,
+  );
+});
+
 test("truncation runs on every append, not lazily before a call", () => {
   const calls: number[] = [];
   const spy: TruncationStrategy = {
@@ -277,12 +291,10 @@ test("constructing with tools that exhaust the window is a config error, not a r
   );
 });
 
-test("the pre-1.8 window error still fires before the overhead one", () => {
-  // A window too small even before any prompt or tools should still report
-  // the reserve as the cause, not the overhead.
+test("a zero context window is rejected at the input boundary", () => {
   assert.throws(
     () => new ConversationManager({ contextWindow: 0, systemPrompt: "s" }),
-    /too small to hold any messages after a reserve/,
+    /contextWindow must be a finite positive whole number/,
   );
 });
 
@@ -476,13 +488,13 @@ test("a non-finite contextWindow is rejected instead of disabling truncation", (
   for (const window of [NaN, Infinity, -Infinity]) {
     assert.throws(
       () => new ConversationManager({ contextWindow: window }),
-      /contextWindow must be a finite number/,
+      /contextWindow must be a finite positive whole number/,
       `contextWindow ${window} must be rejected`,
     );
   }
   assert.throws(
     () => new ConversationManager({ contextWindow: 8_192, reserveTokens: NaN }),
-    /reserveTokens must be a finite number/,
+    /reserveTokens must be a finite non-negative whole number/,
   );
 });
 
@@ -587,4 +599,27 @@ test("REGRESSION: mutating the caller's tools array cannot desync the overhead",
 
   assert.equal(cm.getContext().tools?.length, 1, "the manager must not see the late addition");
   assert.equal(cm.getOverheadTokens(), overheadBefore);
+});
+
+test("REGRESSION: getContext returns a snapshot that cannot bypass budgeting", () => {
+  const cm = new ConversationManager({ contextWindow: 1_000, systemPrompt: "short" });
+  cm.append(user("kept"));
+
+  const snapshot = cm.getContext();
+  snapshot.systemPrompt = "x".repeat(10_000);
+  snapshot.messages.push(user("y".repeat(10_000)));
+
+  assert.equal(cm.getContext().systemPrompt, "short");
+  assert.equal(cm.getHistory().length, 1);
+  assert.ok(cm.getEstimatedTokens() <= cm.getBudgetTokens());
+});
+
+test("REGRESSION: append owns the message instead of retaining a mutable alias", () => {
+  const cm = new ConversationManager({ contextWindow: 1_000 });
+  const message = user("original");
+  cm.append(message);
+  message.content = "changed after append";
+
+  assert.equal(cm.getHistory()[0]?.role, "user");
+  assert.equal((cm.getHistory()[0] as { content: string }).content, "original");
 });
