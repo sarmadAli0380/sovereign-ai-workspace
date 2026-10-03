@@ -1,0 +1,14 @@
+.git
+.harness-credentials.json
+.env
+.env.*
+!.env.example
+node_modules
+dist
+conformance
+deployment/backups
+deployment/secrets/*
+!deployment/secrets/README.md
+**/*.test.ts
+*.tsbuildinfo
+.DS_Store

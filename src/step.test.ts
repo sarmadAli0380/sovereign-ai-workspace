@@ -1,14 +1,37 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { createModels, Type } from "@earendil-works/pi-ai";
+import { createAssistantMessageEventStream, createModels, Type } from "@earendil-works/pi-ai";
 import { fauxProvider } from "@earendil-works/pi-ai/providers/faux";
-import type { AssistantMessage, Api, Model, Models, Usage } from "@earendil-works/pi-ai";
+import type {
+  AssistantMessage,
+  AssistantMessageEvent,
+  Api,
+  Model,
+  Models,
+  StreamOptions,
+  Usage,
+} from "@earendil-works/pi-ai";
 import type { ConfigEntry } from "./config.ts";
 import { ConversationManager } from "./conversation-manager.ts";
+import { CapabilityPolicy } from "./policy.ts";
 import { step } from "./step.ts";
 import { ToolRegistry } from "./tool-registry.ts";
 
 const entry: ConfigEntry = { provider: "faux", modelId: "small", maxTokens: 64 };
+const toolPolicy = new CapabilityPolicy({
+  rules: [{
+    deploymentId: "*",
+    roleId: "*",
+    workspaceId: "*",
+    capability: "net",
+    decision: "allow",
+    reasonCode: "test.network-allowed",
+  }],
+});
+const policyDeps = {
+  toolPolicy,
+  toolPolicyContext: { deploymentId: "test", roleId: "test", workspaceId: "test" },
+};
 
 const usage: Usage = {
   input: 10,
@@ -73,12 +96,36 @@ function weatherRegistry(behaviour: "ok" | "throws" = "ok"): ToolRegistry {
       description: "Get the current weather for a city",
       parameters: Type.Object({ city: Type.String() }),
     },
+    controls: {
+      capabilities: ["net"],
+      risk: "low",
+      timeoutMs: 1_000,
+      maxOutputChars: 10_000,
+      concurrencyCost: 1,
+      sideEffect: "none",
+      idempotency: "natural",
+    },
     async execute(args) {
       if (behaviour === "throws") throw new Error("upstream weather API is down");
       return { content: [{ type: "text", text: `sunny in ${String(args["city"])}` }] };
     },
   });
   return registry;
+}
+
+function modelsFromEvents(events: readonly AssistantMessageEvent[]): Models {
+  return {
+    stream() {
+      const stream = createAssistantMessageEventStream();
+      queueMicrotask(() => {
+        for (const event of events) stream.push(event);
+      });
+      return stream;
+    },
+    async complete() {
+      throw new Error("step must not use the non-streaming model path");
+    },
+  } as unknown as Models;
 }
 
 // --- the step itself
@@ -107,6 +154,7 @@ test("step performs exactly one model call", async () => {
     configKey: "faux-default",
     conversation: conversation(),
     registry: weatherRegistry(),
+    ...policyDeps,
   });
 
   assert.equal(faux.state.callCount, 1, "step must never call the model twice");
@@ -114,11 +162,119 @@ test("step performs exactly one model call", async () => {
   assert.equal(faux.getPendingResponseCount(), 1, "the second response is untouched");
 });
 
+test("step forwards one stream in order and returns that stream's final message", async () => {
+  const message = reply("hello back");
+  const partial = { ...message, content: [{ type: "text", text: "hello" }] } as AssistantMessage;
+  const events: AssistantMessageEvent[] = [
+    { type: "start", partial: { ...message, content: [] } },
+    { type: "text_start", contentIndex: 0, partial: { ...message, content: [] } },
+    { type: "text_delta", contentIndex: 0, delta: "hello", partial },
+    { type: "text_end", contentIndex: 0, content: "hello back", partial: message },
+    { type: "done", reason: "stop", message },
+  ];
+  const seen: AssistantMessageEvent[] = [];
+
+  const outcome = await step({
+    models: modelsFromEvents(events),
+    model: fixture().model,
+    entry,
+    configKey: "faux-default",
+    conversation: conversation(),
+    onEvent: async (event) => {
+      // Make ordering observable: delivery must await each acknowledgement.
+      if (event.type === "text_delta") await Promise.resolve();
+      seen.push(event);
+    },
+  });
+
+  assert.deepEqual(seen.map((event) => event.type), events.map((event) => event.type));
+  assert.equal(seen[2]?.type === "text_delta" ? seen[2].delta : undefined, "hello");
+  assert.equal(outcome.result.message, message, "the result must come from the streamed terminal event");
+});
+
+test("step forwards cancellation and timeout controls to the active stream", async () => {
+  const message = reply("controlled");
+  let seenOptions: StreamOptions | undefined;
+  const models = {
+    stream(_model: Model<Api>, _context: unknown, options?: StreamOptions) {
+      seenOptions = options;
+      const stream = createAssistantMessageEventStream();
+      queueMicrotask(() => stream.push({ type: "done", reason: "stop", message }));
+      return stream;
+    },
+  } as unknown as Models;
+  const controller = new AbortController();
+
+  await step({
+    models,
+    model: fixture().model,
+    entry,
+    configKey: "faux-default",
+    conversation: conversation(),
+    options: { signal: controller.signal, timeoutMs: 1_500 },
+  });
+
+  assert.equal(seenOptions?.signal, controller.signal);
+  assert.equal(seenOptions?.timeoutMs, 1_500);
+});
+
+test("a rejected event acknowledgement fails the step without appending the message", async () => {
+  const message = reply("must not be committed");
+  const cm = conversation();
+
+  const outcome = await step({
+    models: modelsFromEvents([{ type: "done", reason: "stop", message }]),
+    model: fixture().model,
+    entry,
+    configKey: "faux-default",
+    conversation: cm,
+    onEvent: () => {
+      throw new Error("event journal unavailable");
+    },
+  });
+
+  assert.equal(outcome.result.message.stopReason, "error");
+  assert.match(outcome.result.message.errorMessage ?? "", /event journal unavailable/);
+  assert.equal(cm.getHistory().length, 1, "unacknowledged output must not enter history");
+});
+
+test("event-sink mutation cannot alter the provider result or conversation history", async () => {
+  const message = reply("provider-owned result");
+  const cm = conversation();
+
+  const outcome = await step({
+    models: modelsFromEvents([{ type: "done", reason: "stop", message }]),
+    model: fixture().model,
+    entry,
+    configKey: "faux-default",
+    conversation: cm,
+    onEvent: (event) => {
+      if (event.type === "done" && event.message.content[0]?.type === "text") {
+        event.message.content[0].text = "sink mutation";
+      }
+    },
+  });
+
+  assert.equal(
+    outcome.result.message.content[0]?.type === "text"
+      ? outcome.result.message.content[0].text
+      : undefined,
+    "provider-owned result",
+  );
+  const appended = cm.getHistory().at(-1);
+  assert.equal(
+    appended?.role === "assistant" && appended.content[0]?.type === "text"
+      ? appended.content[0].text
+      : undefined,
+    "provider-owned result",
+  );
+});
+
 test("the caller owns iteration, and the loop is four visible lines", async () => {
   const { models, model, faux } = fixture([wantsTool(), reply("18C and sunny")]);
   const cm = conversation();
   const registry = weatherRegistry();
-  const deps = { models, model, entry, configKey: "k", conversation: cm, registry };
+  const deps = { models, model, entry, configKey: "k", conversation: cm, registry, ...policyDeps };
 
   let turns = 0;
   let outcome = await step(deps);
@@ -191,26 +347,149 @@ test("a provider error surfaces as an error result, not an exception", async () 
   assert.equal(cm.getHistory().length, 1, "operational errors must not become assistant history");
 });
 
+test("a provider error is forwarded as a terminal event and never appended", async () => {
+  const providerError = {
+    ...reply("provider unavailable"),
+    stopReason: "error",
+    errorMessage: "provider unavailable",
+  } satisfies AssistantMessage;
+  const events: AssistantMessageEvent[] = [
+    { type: "start", partial: { ...providerError, content: [] } },
+    { type: "error", reason: "error", error: providerError },
+  ];
+  const seen: AssistantMessageEvent[] = [];
+  const cm = conversation();
+
+  const outcome = await step({
+    models: modelsFromEvents(events),
+    model: fixture().model,
+    entry,
+    configKey: "faux-default",
+    conversation: cm,
+    options: { policy: { enabled: false, maxRetries: 0, baseDelayMs: 0 } },
+    onEvent: (event) => {
+      seen.push(event);
+    },
+  });
+
+  assert.equal(seen.at(-1)?.type, "error");
+  assert.equal(outcome.result.message.stopReason, "error");
+  assert.equal(cm.getHistory().length, 1);
+});
+
+test("retry attempts remain visible while the final streamed result controls the step", async () => {
+  const retryable = {
+    ...reply("temporary failure"),
+    stopReason: "error",
+    errorMessage: "fetch failed",
+  } satisfies AssistantMessage;
+  const recovered = reply("recovered");
+  let attempts = 0;
+  const models = {
+    stream() {
+      attempts += 1;
+      const stream = createAssistantMessageEventStream();
+      queueMicrotask(() => {
+        if (attempts === 1) {
+          stream.push({ type: "start", partial: retryable });
+          stream.push({ type: "error", reason: "error", error: retryable });
+        } else {
+          stream.push({ type: "start", partial: recovered });
+          stream.push({ type: "done", reason: "stop", message: recovered });
+        }
+      });
+      return stream;
+    },
+  } as unknown as Models;
+  const seen: AssistantMessageEvent[] = [];
+  const cm = conversation();
+
+  const outcome = await step({
+    models,
+    model: fixture().model,
+    entry,
+    configKey: "faux-default",
+    conversation: cm,
+    options: { policy: { enabled: true, maxRetries: 1, baseDelayMs: 0 } },
+    onEvent: (event) => {
+      seen.push(event);
+    },
+  });
+
+  assert.equal(attempts, 2);
+  assert.deepEqual(seen.map((event) => event.type), ["start", "error", "start", "done"]);
+  assert.equal(outcome.result.message, recovered);
+  assert.equal(cm.getHistory().length, 2, "only the recovered assistant turn is appended");
+});
+
 test("an aborted provider call is not appended as an assistant turn", async () => {
-  const { models, model } = fixture();
+  const { model } = fixture();
   const cm = conversation();
   const aborted = {
     ...reply(""),
     content: [],
     stopReason: "aborted",
   } satisfies AssistantMessage;
-  const broken = { ...models, complete: async () => aborted } as unknown as Models;
+  const events: AssistantMessageEvent[] = [
+    { type: "start", partial: aborted },
+    { type: "error", reason: "aborted", error: aborted },
+  ];
+  const seen: AssistantMessageEvent[] = [];
 
   const outcome = await step({
-    models: broken,
+    models: modelsFromEvents(events),
     model,
+    entry,
+    configKey: "faux-default",
+    conversation: cm,
+    onEvent: (event) => {
+      seen.push(event);
+    },
+  });
+
+  assert.equal(outcome.result.message.stopReason, "aborted");
+  assert.equal(outcome.done, true);
+  assert.equal(cm.getHistory().length, 1);
+  const terminal = seen.at(-1);
+  assert.equal(terminal?.type, "error");
+  assert.equal(terminal?.type === "error" ? terminal.reason : undefined, "aborted");
+});
+
+test("cancellation beats a provider that still reports done before history append", async () => {
+  const controller = new AbortController();
+  const message = reply("late success");
+  const cm = conversation();
+
+  const outcome = await step({
+    models: modelsFromEvents([{ type: "done", reason: "stop", message }]),
+    model: fixture().model,
+    entry,
+    configKey: "faux-default",
+    conversation: cm,
+    options: { signal: controller.signal },
+    onEvent: (event) => {
+      if (event.type === "done") controller.abort();
+    },
+  });
+
+  assert.equal(outcome.result.message.stopReason, "aborted");
+  assert.equal(outcome.result.message.content.length, 0);
+  assert.equal(cm.getHistory().length, 1);
+});
+
+test("an invalid completed message is rejected before assistant history append", async () => {
+  const malformed = { ...reply("bad"), usage: undefined } as unknown as AssistantMessage;
+  const cm = conversation();
+  const outcome = await step({
+    models: modelsFromEvents([{ type: "done", reason: "stop", message: malformed }]),
+    model: fixture().model,
     entry,
     configKey: "faux-default",
     conversation: cm,
   });
 
-  assert.equal(outcome.result.message.stopReason, "aborted");
-  assert.equal(outcome.done, true);
+  assert.equal(outcome.result.message.stopReason, "error");
+  assert.match(outcome.result.message.errorMessage ?? "", /invalid completed assistant message/);
   assert.equal(cm.getHistory().length, 1);
 });
 
@@ -253,7 +532,12 @@ test("PROPERTY: step never throws, whatever the dependency does", async () => {
   ];
 
   for (const [i, behaviour] of failures.entries()) {
-    const broken = { ...models, complete: behaviour } as unknown as Models;
+    const broken = {
+      stream: () => ({
+        result: behaviour,
+        async *[Symbol.asyncIterator]() {},
+      }),
+    } as unknown as Models;
     const outcome = await step({
       models: broken,
       model,
@@ -299,6 +583,7 @@ test("a tool request with a registry dispatches, appends, and does NOT end the s
     configKey: "faux-default",
     conversation: cm,
     registry: weatherRegistry(),
+    ...policyDeps,
   });
 
   assert.equal(outcome.done, false, "the caller may step again — it is not told to");
@@ -319,6 +604,7 @@ test("a throwing tool handler continues the exchange as an isError result", asyn
     configKey: "faux-default",
     conversation: conversation(),
     registry: weatherRegistry("throws"),
+    ...policyDeps,
   });
 
   assert.equal(outcome.done, false);
@@ -343,6 +629,7 @@ test("parallel tool calls in one turn are all dispatched", async () => {
     configKey: "faux-default",
     conversation: cm,
     registry: weatherRegistry(),
+    ...policyDeps,
   });
 
   assert.equal(outcome.toolCalls.length, 2);

@@ -1,0 +1,320 @@
+{
+  "schemaVersion": 1,
+  "kind": "model-load-baseline",
+  "recordedAt": "2026-08-11T12:31:19.394Z",
+  "verdict": "pass",
+  "thresholds": null,
+  "thresholdStatus": "not-established",
+  "profile": {
+    "configKey": "local-qwen",
+    "provider": "ollama",
+    "modelId": "qwen3:4b",
+    "contextWindow": 8192
+  },
+  "samplePolicy": {
+    "warmupExcluded": true,
+    "requiredSamples": 30,
+    "measuredSamples": 30,
+    "stateBeforeEachSample": "model absent from Ollama /api/ps",
+    "processAndOsFileCache": "warm after the excluded first load"
+  },
+  "timingSemantics": {
+    "durationMs": "accepted unload completion to completed /api/generate preload response; post-load inspection excluded"
+  },
+  "warmup": {
+    "index": 1,
+    "durationMs": 15687.437916,
+    "servedContextWindow": 8192,
+    "residentBytes": 3777935441,
+    "acceleratorBytes": 3777935441,
+    "conformance": "pass",
+    "issues": []
+  },
+  "samples": [
+    {
+      "index": 1,
+      "durationMs": 4376.628708999997,
+      "servedContextWindow": 8192,
+      "residentBytes": 3777935441,
+      "acceleratorBytes": 3777935441,
+      "conformance": "pass",
+      "issues": []
+    },
+    {
+      "index": 2,
+      "durationMs": 2197.6834579999995,
+      "servedContextWindow": 8192,
+      "residentBytes": 3777935441,
+      "acceleratorBytes": 3777935441,
+      "conformance": "pass",
+      "issues": []
+    },
+    {
+      "index": 3,
+      "durationMs": 2326.1504589999968,
+      "servedContextWindow": 8192,
+      "residentBytes": 3777935441,
+      "acceleratorBytes": 3777935441,
+      "conformance": "pass",
+      "issues": []
+    },
+    {
+      "index": 4,
+      "durationMs": 2265.327250000002,
+      "servedContextWindow": 8192,
+      "residentBytes": 3777935441,
+      "acceleratorBytes": 3777935441,
+      "conformance": "pass",
+      "issues": []
+    },
+    {
+      "index": 5,
+      "durationMs": 1764.1499580000018,
+      "servedContextWindow": 8192,
+      "residentBytes": 3777935441,
+      "acceleratorBytes": 3777935441,
+      "conformance": "pass",
+      "issues": []
+    },
+    {
+      "index": 6,
+      "durationMs": 2220.2412079999995,
+      "servedContextWindow": 8192,
+      "residentBytes": 3777935441,
+      "acceleratorBytes": 3777935441,
+      "conformance": "pass",
+      "issues": []
+    },
+    {
+      "index": 7,
+      "durationMs": 2153.0444579999967,
+      "servedContextWindow": 8192,
+      "residentBytes": 3777935441,
+      "acceleratorBytes": 3777935441,
+      "conformance": "pass",
+      "issues": []
+    },
+    {
+      "index": 8,
+      "durationMs": 2314.528041000005,
+      "servedContextWindow": 8192,
+      "residentBytes": 3777935441,
+      "acceleratorBytes": 3777935441,
+      "conformance": "pass",
+      "issues": []
+    },
+    {
+      "index": 9,
+      "durationMs": 1737.8834590000042,
+      "servedContextWindow": 8192,
+      "residentBytes": 3777935441,
+      "acceleratorBytes": 3777935441,
+      "conformance": "pass",
+      "issues": []
+    },
+    {
+      "index": 10,
+      "durationMs": 1944.5642080000034,
+      "servedContextWindow": 8192,
+      "residentBytes": 3777935441,
+      "acceleratorBytes": 3777935441,
+      "conformance": "pass",
+      "issues": []
+    },
+    {
+      "index": 11,
+      "durationMs": 1797.705458000004,
+      "servedContextWindow": 8192,
+      "residentBytes": 3777935441,
+      "acceleratorBytes": 3777935441,
+      "conformance": "pass",
+      "issues": []
+    },
+    {
+      "index": 12,
+      "durationMs": 1673.6824999999953,
+      "servedContextWindow": 8192,
+      "residentBytes": 3777935441,
+      "acceleratorBytes": 3777935441,
+      "conformance": "pass",
+      "issues": []
+    },
+    {
+      "index": 13,
+      "durationMs": 1552.768375000007,
+      "servedContextWindow": 8192,
+      "residentBytes": 3777935441,
+      "acceleratorBytes": 3777935441,
+      "conformance": "pass",
+      "issues": []
+    },
+    {
+      "index": 14,
+      "durationMs": 1786.4332919999943,
+      "servedContextWindow": 8192,
+      "residentBytes": 3777935441,
+      "acceleratorBytes": 3777935441,
+      "conformance": "pass",
+      "issues": []
+    },
+    {
+      "index": 15,
+      "durationMs": 1830.9073750000025,
+      "servedContextWindow": 8192,
+      "residentBytes": 3777935441,
+      "acceleratorBytes": 3777935441,
+      "conformance": "pass",
+      "issues": []
+    },
+    {
+      "index": 16,
+      "durationMs": 2604.310749999997,
+      "servedContextWindow": 8192,
+      "residentBytes": 3777935441,
+      "acceleratorBytes": 3777935441,
+      "conformance": "pass",
+      "issues": []
+    },
+    {
+      "index": 17,
+      "durationMs": 1816.6854170000006,
+      "servedContextWindow": 8192,
+      "residentBytes": 3777935441,
+      "acceleratorBytes": 3777935441,
+      "conformance": "pass",
+      "issues": []
+    },
+    {
+      "index": 18,
+      "durationMs": 2521.764750000002,
+      "servedContextWindow": 8192,
+      "residentBytes": 3777935441,
+      "acceleratorBytes": 3777935441,
+      "conformance": "pass",
+      "issues": []
+    },
+    {
+      "index": 19,
+      "durationMs": 1841.1092079999944,
+      "servedContextWindow": 8192,
+      "residentBytes": 3777935441,
+      "acceleratorBytes": 3777935441,
+      "conformance": "pass",
+      "issues": []
+    },
+    {
+      "index": 20,
+      "durationMs": 1866.6677080000009,
+      "servedContextWindow": 8192,
+      "residentBytes": 3777935441,
+      "acceleratorBytes": 3777935441,
+      "conformance": "pass",
+      "issues": []
+    },
+    {
+      "index": 21,
+      "durationMs": 1871.050083999995,
+      "servedContextWindow": 8192,
+      "residentBytes": 3777935441,
+      "acceleratorBytes": 3777935441,
+      "conformance": "pass",
+      "issues": []
+    },
+    {
+      "index": 22,
+      "durationMs": 1788.882749999997,
+      "servedContextWindow": 8192,
+      "residentBytes": 3777935441,
+      "acceleratorBytes": 3777935441,
+      "conformance": "pass",
+      "issues": []
+    },
+    {
+      "index": 23,
+      "durationMs": 1931.6450420000037,
+      "servedContextWindow": 8192,
+      "residentBytes": 3777935441,
+      "acceleratorBytes": 3777935441,
+      "conformance": "pass",
+      "issues": []
+    },
+    {
+      "index": 24,
+      "durationMs": 2297.9200839999976,
+      "servedContextWindow": 8192,
+      "residentBytes": 3777935441,
+      "acceleratorBytes": 3777935441,
+      "conformance": "pass",
+      "issues": []
+    },
+    {
+      "index": 25,
+      "durationMs": 3007.3176250000106,
+      "servedContextWindow": 8192,
+      "residentBytes": 3777935441,
+      "acceleratorBytes": 3777935441,
+      "conformance": "pass",
+      "issues": []
+    },
+    {
+      "index": 26,
+      "durationMs": 2422.382958000002,
+      "servedContextWindow": 8192,
+      "residentBytes": 3777935441,
+      "acceleratorBytes": 3777935441,
+      "conformance": "pass",
+      "issues": []
+    },
+    {
+      "index": 27,
+      "durationMs": 2298.754667000001,
+      "servedContextWindow": 8192,
+      "residentBytes": 3777935441,
+      "acceleratorBytes": 3777935441,
+      "conformance": "pass",
+      "issues": []
+    },
+    {
+      "index": 28,
+      "durationMs": 1805.2147499999992,
+      "servedContextWindow": 8192,
+      "residentBytes": 3777935441,
+      "acceleratorBytes": 3777935441,
+      "conformance": "pass",
+      "issues": []
+    },
+    {
+      "index": 29,
+      "durationMs": 2707.7940420000086,
+      "servedContextWindow": 8192,
+      "residentBytes": 3777935441,
+      "acceleratorBytes": 3777935441,
+      "conformance": "pass",
+      "issues": []
+    },
+    {
+      "index": 30,
+      "durationMs": 1887.6967920000025,
+      "servedContextWindow": 8192,
+      "residentBytes": 3777935441,
+      "acceleratorBytes": 3777935441,
+      "conformance": "pass",
+      "issues": []
+    }
+  ],
+  "summary": {
+    "sampleCount": 30,
+    "successfulSamples": 30,
+    "failedSamples": 0,
+    "conformanceRate": 1,
+    "metricPopulation": "conformant-samples-only",
+    "metricSampleCount": 30,
+    "durationMs": {
+      "min": 1552.768375000007,
+      "p50": 1931.6450420000037,
+      "p95": 3007.3176250000106,
+      "max": 4376.628708999997
+    },
+    "verdict": "pass"
+  }
+}

@@ -17,6 +17,7 @@ import {
   type TurnCompletedPayload,
   type TurnStartedPayload,
 } from "./events.ts";
+import type { ProductMessageUsage } from "./messages/envelope.ts";
 
 export interface ContentFingerprint {
   bytes: number;
@@ -43,7 +44,7 @@ export interface AuditMessageCompletedPayload {
   role: "user" | "assistant" | "toolResult";
   provider?: string;
   model?: string;
-  usage?: RunUsage;
+  usage?: ProductMessageUsage;
   contentBytes: number;
   contentHash: string;
 }
@@ -68,6 +69,8 @@ export type OperationalToolRequestedPayload = Omit<
 export interface ProjectedToolDecisionPayload {
   toolCallId: string;
   toolName: string;
+  capability: string;
+  capabilities: readonly string[];
   decision: "allow" | "deny" | "requireApproval";
   reasonCode: string;
 }
@@ -218,13 +221,20 @@ function auditPayload(event: RunEvent): AuditRunEventPayloadMap[RunEventType] {
       };
     }
     case "message.completed": {
-      const fingerprint = fingerprintContent(event.payload.content);
+      const message = event.payload.message;
+      const fingerprint = fingerprintContent(
+        {
+          content: message.content,
+          ...(message.extensions ? { extensions: message.extensions } : {}),
+        } as unknown as JsonValue,
+      );
       return {
-        messageId: event.payload.messageId,
-        role: event.payload.role,
-        ...(event.payload.provider ? { provider: event.payload.provider } : {}),
-        ...(event.payload.model ? { model: event.payload.model } : {}),
-        ...(event.payload.usage ? { usage: cloneJson(event.payload.usage) } : {}),
+        messageId: message.messageId,
+        role: message.role,
+        ...(message.provider
+          ? { provider: message.provider.provider, model: message.provider.model }
+          : {}),
+        ...(message.usage ? { usage: cloneJson(message.usage) } : {}),
         contentBytes: fingerprint.bytes,
         contentHash: fingerprint.sha256,
       };
@@ -242,6 +252,8 @@ function auditPayload(event: RunEvent): AuditRunEventPayloadMap[RunEventType] {
       return {
         toolCallId: event.payload.toolCallId,
         toolName: event.payload.toolName,
+        capability: event.payload.capability,
+        capabilities: cloneJson(event.payload.capabilities),
         decision: event.payload.decision,
         reasonCode: event.payload.reasonCode,
       };

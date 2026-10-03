@@ -1,0 +1,533 @@
+{
+  "schemaVersion": 1,
+  "recordedAt": "2026-08-10T13:39:57.327Z",
+  "verdict": "pass",
+  "timingSemantics": {
+    "promptLatencyMs": "request start to first text, thinking, or tool-call stream event",
+    "generationLatencyMs": "first output stream event to terminal stream event",
+    "totalLatencyMs": "whole call including retry delays and failed attempts"
+  },
+  "decision": {
+    "recommendedDefault": "drop-oldest",
+    "candidateStatus": "evaluated-not-selected",
+    "rule": "Select only when safety and response gates pass, fixed facts and stable-prefix extent improve, at least one provider reports a cache gain, no provider reports regression, cost stays within 1.25x, and prompt latency within 2x.",
+    "reasons": [
+      "safety-and-response-gates=pass",
+      "fixed-factual-retention=improved",
+      "estimated-stable-prefix=improved",
+      "provider-cache-regression=none-observed",
+      "provider-cache-improvement=not-observed",
+      "cost-ratio-limit-1.25=pass",
+      "prompt-latency-ratio-limit-2.0=fail"
+    ]
+  },
+  "targets": [
+    {
+      "evaluation": {
+        "schemaVersion": 1,
+        "recordedAt": "2026-08-10T13:39:57.327Z",
+        "configKey": "codex-default",
+        "provider": "openai-codex",
+        "modelId": "gpt-5.6-luna",
+        "servedContextWindow": 272000,
+        "evaluationContextWindow": 3500,
+        "strategies": [
+          {
+            "strategy": "drop-oldest",
+            "safety": {
+              "contextWithinBudget": true,
+              "toolCallResultIntegrity": true,
+              "completeHistoryImmutable": true,
+              "omissionManifest": "not-applicable"
+            },
+            "factualRetention": {
+              "evaluationFactIds": [
+                0,
+                1,
+                16,
+                17,
+                33,
+                34
+              ],
+              "retainedFactIds": [
+                33,
+                34
+              ],
+              "retainedFacts": 2,
+              "totalFacts": 6,
+              "score": 0.3333
+            },
+            "cacheExtent": {
+              "estimatedStablePrefixTokensAcrossAppend": 620,
+              "coldCacheReadTokens": 0,
+              "warmCacheReadTokens": 0,
+              "providerMetrics": "unreported-or-not-observed"
+            },
+            "aggregate": {
+              "costUsd": 0.01082,
+              "promptLatencyMs": 3409,
+              "generationLatencyMs": 936,
+              "totalLatencyMs": 4345
+            },
+            "probes": [
+              {
+                "label": "cold",
+                "phase": "cold",
+                "promptFingerprint": "839ba429b137ec44ddc66f07b76a510b806efd040d87f49801f34b3508d1d544",
+                "retainedSourceMessages": 19,
+                "derivedMessages": 0,
+                "droppedSourceMessages": 19,
+                "estimatedInputTokens": 3301,
+                "providerPromptTokens": 5245,
+                "usage": {
+                  "inputTokens": 5245,
+                  "outputTokens": 8,
+                  "cacheReadTokens": 0,
+                  "cacheWriteTokens": 0,
+                  "totalTokens": 5253
+                },
+                "costUsd": {
+                  "input": 0.005245,
+                  "output": 0.000048,
+                  "cacheRead": 0,
+                  "cacheWrite": 0,
+                  "total": 0.005293
+                },
+                "timing": {
+                  "promptLatencyMs": 1564,
+                  "generationLatencyMs": 27,
+                  "totalLatencyMs": 1591,
+                  "retryCount": 0,
+                  "measurement": "request-to-first-output-and-first-output-to-terminal"
+                },
+                "responseConformance": {
+                  "verdict": "pass",
+                  "issues": [],
+                  "stopReason": "stop"
+                }
+              },
+              {
+                "label": "warm-appended-history",
+                "phase": "warm-appended-history",
+                "promptFingerprint": "d12e5ac3a6b9d9bcd54b0b3dda0d9d2a25b0815e1c6975d5f521e27b4a1d5e6e",
+                "retainedSourceMessages": 19,
+                "derivedMessages": 0,
+                "droppedSourceMessages": 20,
+                "estimatedInputTokens": 3307,
+                "providerPromptTokens": 5257,
+                "usage": {
+                  "inputTokens": 5257,
+                  "outputTokens": 45,
+                  "cacheReadTokens": 0,
+                  "cacheWriteTokens": 0,
+                  "totalTokens": 5302
+                },
+                "costUsd": {
+                  "input": 0.0052569999999999995,
+                  "output": 0.00027,
+                  "cacheRead": 0,
+                  "cacheWrite": 0,
+                  "total": 0.005527
+                },
+                "timing": {
+                  "promptLatencyMs": 1845,
+                  "generationLatencyMs": 909,
+                  "totalLatencyMs": 2754,
+                  "retryCount": 0,
+                  "measurement": "request-to-first-output-and-first-output-to-terminal"
+                },
+                "responseConformance": {
+                  "verdict": "pass",
+                  "issues": [],
+                  "stopReason": "stop"
+                }
+              }
+            ]
+          },
+          {
+            "strategy": "prefix-preserving-compaction-v1",
+            "safety": {
+              "contextWithinBudget": true,
+              "toolCallResultIntegrity": true,
+              "completeHistoryImmutable": true,
+              "omissionManifest": "versioned-rebuildable-no-summary"
+            },
+            "factualRetention": {
+              "evaluationFactIds": [
+                0,
+                1,
+                16,
+                17,
+                33,
+                34
+              ],
+              "retainedFactIds": [
+                0,
+                1,
+                33,
+                34
+              ],
+              "retainedFacts": 4,
+              "totalFacts": 6,
+              "score": 0.6667
+            },
+            "cacheExtent": {
+              "estimatedStablePrefixTokensAcrossAppend": 1220,
+              "coldCacheReadTokens": 0,
+              "warmCacheReadTokens": 0,
+              "providerMetrics": "unreported-or-not-observed"
+            },
+            "aggregate": {
+              "costUsd": 0.010593000000000002,
+              "promptLatencyMs": 7381,
+              "generationLatencyMs": 3447,
+              "totalLatencyMs": 10828
+            },
+            "probes": [
+              {
+                "label": "cold",
+                "phase": "cold",
+                "promptFingerprint": "0583916fb138b95e25a63bdfd19ef7348462e9d908df47f3b6c7052e3322f9dd",
+                "retainedSourceMessages": 18,
+                "derivedMessages": 1,
+                "droppedSourceMessages": 20,
+                "estimatedInputTokens": 3301,
+                "providerPromptTokens": 5164,
+                "usage": {
+                  "inputTokens": 5164,
+                  "outputTokens": 8,
+                  "cacheReadTokens": 0,
+                  "cacheWriteTokens": 0,
+                  "totalTokens": 5172
+                },
+                "costUsd": {
+                  "input": 0.005164,
+                  "output": 0.000048,
+                  "cacheRead": 0,
+                  "cacheWrite": 0,
+                  "total": 0.0052120000000000005
+                },
+                "timing": {
+                  "promptLatencyMs": 5831,
+                  "generationLatencyMs": 3078,
+                  "totalLatencyMs": 8909,
+                  "retryCount": 0,
+                  "measurement": "request-to-first-output-and-first-output-to-terminal"
+                },
+                "responseConformance": {
+                  "verdict": "pass",
+                  "issues": [],
+                  "stopReason": "stop"
+                }
+              },
+              {
+                "label": "warm-appended-history",
+                "phase": "warm-appended-history",
+                "promptFingerprint": "9953556eac29d2c3228b070c5eaa5d3e2acba2c6a25a5e8479bb5c7d9fbf104f",
+                "retainedSourceMessages": 18,
+                "derivedMessages": 1,
+                "droppedSourceMessages": 21,
+                "estimatedInputTokens": 3307,
+                "providerPromptTokens": 5183,
+                "usage": {
+                  "inputTokens": 5183,
+                  "outputTokens": 33,
+                  "cacheReadTokens": 0,
+                  "cacheWriteTokens": 0,
+                  "totalTokens": 5216
+                },
+                "costUsd": {
+                  "input": 0.005183,
+                  "output": 0.00019800000000000002,
+                  "cacheRead": 0,
+                  "cacheWrite": 0,
+                  "total": 0.005381
+                },
+                "timing": {
+                  "promptLatencyMs": 1550,
+                  "generationLatencyMs": 369,
+                  "totalLatencyMs": 1919,
+                  "retryCount": 0,
+                  "measurement": "request-to-first-output-and-first-output-to-terminal"
+                },
+                "responseConformance": {
+                  "verdict": "pass",
+                  "issues": [],
+                  "stopReason": "stop"
+                }
+              }
+            ]
+          }
+        ],
+        "comparison": {
+          "factualRetentionDelta": 2,
+          "estimatedStablePrefixTokenDelta": 600,
+          "providerCacheExtent": "unverified",
+          "costRatio": 0.979,
+          "promptLatencyRatio": 2.1652
+        },
+        "verdict": "pass"
+      },
+      "deploymentContext": {
+        "source": "configured",
+        "configuredTokens": 272000,
+        "verdict": "pass",
+        "issues": []
+      }
+    },
+    {
+      "evaluation": {
+        "schemaVersion": 1,
+        "recordedAt": "2026-08-10T13:39:57.327Z",
+        "configKey": "local-qwen",
+        "provider": "ollama",
+        "modelId": "qwen3:4b",
+        "servedContextWindow": 8192,
+        "evaluationContextWindow": 3500,
+        "strategies": [
+          {
+            "strategy": "drop-oldest",
+            "safety": {
+              "contextWithinBudget": true,
+              "toolCallResultIntegrity": true,
+              "completeHistoryImmutable": true,
+              "omissionManifest": "not-applicable"
+            },
+            "factualRetention": {
+              "evaluationFactIds": [
+                0,
+                1,
+                16,
+                17,
+                33,
+                34
+              ],
+              "retainedFactIds": [
+                33,
+                34
+              ],
+              "retainedFacts": 2,
+              "totalFacts": 6,
+              "score": 0.3333
+            },
+            "cacheExtent": {
+              "estimatedStablePrefixTokensAcrossAppend": 620,
+              "coldCacheReadTokens": 0,
+              "warmCacheReadTokens": 0,
+              "providerMetrics": "unreported-or-not-observed"
+            },
+            "aggregate": {
+              "costUsd": 0,
+              "promptLatencyMs": 152360,
+              "generationLatencyMs": 24969,
+              "totalLatencyMs": 177329
+            },
+            "probes": [
+              {
+                "label": "cold",
+                "phase": "cold",
+                "promptFingerprint": "60facb79c454cd54a6940680206a34cc2179259f53c7c61af18862fef462f243",
+                "retainedSourceMessages": 19,
+                "derivedMessages": 0,
+                "droppedSourceMessages": 19,
+                "estimatedInputTokens": 3301,
+                "providerPromptTokens": 8075,
+                "usage": {
+                  "inputTokens": 8075,
+                  "outputTokens": 128,
+                  "cacheReadTokens": 0,
+                  "cacheWriteTokens": 0,
+                  "totalTokens": 8203
+                },
+                "costUsd": {
+                  "input": 0,
+                  "output": 0,
+                  "cacheRead": 0,
+                  "cacheWrite": 0,
+                  "total": 0
+                },
+                "timing": {
+                  "promptLatencyMs": 76203,
+                  "generationLatencyMs": 11645,
+                  "totalLatencyMs": 87848,
+                  "retryCount": 0,
+                  "measurement": "request-to-first-output-and-first-output-to-terminal"
+                },
+                "responseConformance": {
+                  "verdict": "pass",
+                  "issues": [],
+                  "stopReason": "length"
+                }
+              },
+              {
+                "label": "warm-appended-history",
+                "phase": "warm-appended-history",
+                "promptFingerprint": "98252e5163b0e421ecbf6b0e9c10d12f64779da81d960c5a34e84b92eaaba68a",
+                "retainedSourceMessages": 19,
+                "derivedMessages": 0,
+                "droppedSourceMessages": 20,
+                "estimatedInputTokens": 3307,
+                "providerPromptTokens": 8083,
+                "usage": {
+                  "inputTokens": 8083,
+                  "outputTokens": 128,
+                  "cacheReadTokens": 0,
+                  "cacheWriteTokens": 0,
+                  "totalTokens": 8211
+                },
+                "costUsd": {
+                  "input": 0,
+                  "output": 0,
+                  "cacheRead": 0,
+                  "cacheWrite": 0,
+                  "total": 0
+                },
+                "timing": {
+                  "promptLatencyMs": 76157,
+                  "generationLatencyMs": 13324,
+                  "totalLatencyMs": 89481,
+                  "retryCount": 0,
+                  "measurement": "request-to-first-output-and-first-output-to-terminal"
+                },
+                "responseConformance": {
+                  "verdict": "pass",
+                  "issues": [],
+                  "stopReason": "length"
+                }
+              }
+            ]
+          },
+          {
+            "strategy": "prefix-preserving-compaction-v1",
+            "safety": {
+              "contextWithinBudget": true,
+              "toolCallResultIntegrity": true,
+              "completeHistoryImmutable": true,
+              "omissionManifest": "versioned-rebuildable-no-summary"
+            },
+            "factualRetention": {
+              "evaluationFactIds": [
+                0,
+                1,
+                16,
+                17,
+                33,
+                34
+              ],
+              "retainedFactIds": [
+                0,
+                1,
+                33,
+                34
+              ],
+              "retainedFacts": 4,
+              "totalFacts": 6,
+              "score": 0.6667
+            },
+            "cacheExtent": {
+              "estimatedStablePrefixTokensAcrossAppend": 1220,
+              "coldCacheReadTokens": 0,
+              "warmCacheReadTokens": 0,
+              "providerMetrics": "unreported-or-not-observed"
+            },
+            "aggregate": {
+              "costUsd": 0,
+              "promptLatencyMs": 188857,
+              "generationLatencyMs": 36564,
+              "totalLatencyMs": 225423
+            },
+            "probes": [
+              {
+                "label": "cold",
+                "phase": "cold",
+                "promptFingerprint": "7df80d2d206d2b39436ad98b4b4ec67da2b21e7c942ec0f6040739f80cef4595",
+                "retainedSourceMessages": 18,
+                "derivedMessages": 1,
+                "droppedSourceMessages": 20,
+                "estimatedInputTokens": 3301,
+                "providerPromptTokens": 7833,
+                "usage": {
+                  "inputTokens": 7833,
+                  "outputTokens": 128,
+                  "cacheReadTokens": 0,
+                  "cacheWriteTokens": 0,
+                  "totalTokens": 7961
+                },
+                "costUsd": {
+                  "input": 0,
+                  "output": 0,
+                  "cacheRead": 0,
+                  "cacheWrite": 0,
+                  "total": 0
+                },
+                "timing": {
+                  "promptLatencyMs": 114407,
+                  "generationLatencyMs": 17484,
+                  "totalLatencyMs": 131892,
+                  "retryCount": 0,
+                  "measurement": "request-to-first-output-and-first-output-to-terminal"
+                },
+                "responseConformance": {
+                  "verdict": "pass",
+                  "issues": [],
+                  "stopReason": "length"
+                }
+              },
+              {
+                "label": "warm-appended-history",
+                "phase": "warm-appended-history",
+                "promptFingerprint": "d487831442c6677c7defb42d4ca614ddd90dc058a78425f75ba99acb571212c8",
+                "retainedSourceMessages": 18,
+                "derivedMessages": 1,
+                "droppedSourceMessages": 21,
+                "estimatedInputTokens": 3307,
+                "providerPromptTokens": 7844,
+                "usage": {
+                  "inputTokens": 7844,
+                  "outputTokens": 128,
+                  "cacheReadTokens": 0,
+                  "cacheWriteTokens": 0,
+                  "totalTokens": 7972
+                },
+                "costUsd": {
+                  "input": 0,
+                  "output": 0,
+                  "cacheRead": 0,
+                  "cacheWrite": 0,
+                  "total": 0
+                },
+                "timing": {
+                  "promptLatencyMs": 74450,
+                  "generationLatencyMs": 19080,
+                  "totalLatencyMs": 93531,
+                  "retryCount": 0,
+                  "measurement": "request-to-first-output-and-first-output-to-terminal"
+                },
+                "responseConformance": {
+                  "verdict": "pass",
+                  "issues": [],
+                  "stopReason": "length"
+                }
+              }
+            ]
+          }
+        ],
+        "comparison": {
+          "factualRetentionDelta": 2,
+          "estimatedStablePrefixTokenDelta": 600,
+          "providerCacheExtent": "unverified",
+          "costRatio": 1,
+          "promptLatencyRatio": 1.2395
+        },
+        "verdict": "pass"
+      },
+      "deploymentContext": {
+        "source": "ollama-api-ps",
+        "configuredTokens": 8192,
+        "observedTokens": 8192,
+        "verdict": "pass",
+        "issues": []
+      }
+    }
+  ]
+}

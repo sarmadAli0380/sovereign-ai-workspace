@@ -11,13 +11,25 @@
     "typecheck": "tsc --noEmit",
     "test": "node --test",
     "login": "node scripts/login.ts",
-    "verify": "node scripts/verify-live.ts"
+    "verify": "node scripts/verify-live.ts",
+    "verify:cache": "node scripts/verify-cache.ts",
+    "verify:admission": "node scripts/verify-admission.ts",
+    "verify:embeddings": "node scripts/verify-embeddings.ts",
+    "verify:model-load": "node scripts/verify-model-load.ts",
+    "verify:performance": "node scripts/verify-performance.ts",
+    "verify:deployment": "node scripts/verify-deployment.ts",
+    "verify:residency": "node scripts/verify-residency.ts",
+    "verify:truncation": "node scripts/verify-truncation.ts",
+    "serve": "node scripts/serve.ts"
   },
   "dependencies": {
-    "@earendil-works/pi-ai": "^0.82.1"
+    "@earendil-works/pi-ai": "^0.82.1",
+    "@modelcontextprotocol/sdk": "1.30.0",
+    "pg": "8.16.3"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",
+    "@types/pg": "8.15.5",
     "typescript": "^5.7.2"
   }
 }

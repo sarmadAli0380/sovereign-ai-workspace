@@ -4,14 +4,13 @@
  * type: provider messages are mapped into it at the boundary.
  */
 
-export const RUN_EVENT_SCHEMA_VERSION = 1 as const;
+import type { JsonObject, JsonPrimitive, JsonValue } from "./json.ts";
+import { collectProductMessageIssues } from "./messages/codec.ts";
+import type { ProductMessageEnvelope } from "./messages/envelope.ts";
 
-export type JsonPrimitive = string | number | boolean | null;
-export type JsonValue =
-  | JsonPrimitive
-  | readonly JsonValue[]
-  | { readonly [key: string]: JsonValue };
-export type JsonObject = { readonly [key: string]: JsonValue };
+export type { JsonObject, JsonPrimitive, JsonValue } from "./json.ts";
+
+export const RUN_EVENT_SCHEMA_VERSION = 1 as const;
 
 export type EventAudience = "ui" | "persistence" | "audit" | "operational";
 export type FullEventAudience = "ui" | "persistence";
@@ -23,6 +22,11 @@ export interface RunUsage {
   cacheRead: number;
   cacheWrite: number;
   totalTokens: number;
+}
+
+export interface RunBudgetUsage {
+  tokens: number;
+  source: "anchored" | "estimated";
 }
 
 export interface RunStartedPayload {
@@ -42,14 +46,8 @@ export interface MessageDeltaPayload {
   delta: string;
 }
 
-/** A0.3 will replace `content` with the product message envelope. */
 export interface MessageCompletedPayload {
-  messageId: string;
-  role: "user" | "assistant" | "toolResult";
-  content: JsonValue;
-  provider?: string;
-  model?: string;
-  usage?: RunUsage;
+  message: ProductMessageEnvelope;
 }
 
 export interface ToolRequestedPayload {
@@ -61,6 +59,10 @@ export interface ToolRequestedPayload {
 export interface ToolDecisionPayload {
   toolCallId: string;
   toolName: string;
+  /** Capability which determined the aggregate decision. */
+  capability: string;
+  /** Complete, sorted declaration evaluated for this call. */
+  capabilities: readonly string[];
   decision: "allow" | "deny" | "requireApproval";
   reasonCode: string;
   detail?: string;
@@ -98,10 +100,11 @@ export interface ApprovalResolvedPayload {
 export interface TurnCompletedPayload {
   stopReason: "stop" | "length" | "toolUse" | "error" | "aborted";
   usage?: RunUsage;
+  budget: RunBudgetUsage;
 }
 
 export interface RunCompletedPayload {
-  reason: "stop" | "maxTurns";
+  reason: "stop" | "maxTurns" | "needsApproval";
   usage?: RunUsage;
 }
 
@@ -362,21 +365,14 @@ function validatePayload(type: RunEventType, value: unknown, issues: string[]): 
       if (typeof value["delta"] !== "string") issues.push(`${path}.delta: must be a string`);
       break;
     case "message.completed":
-      checkUnknownKeys(
-        value,
-        ["messageId", "role", "content", "provider", "model", "usage"],
-        path,
-        issues,
-      );
-      requireString(value, "messageId", path, issues);
-      if (!new Set(["user", "assistant", "toolResult"]).has(String(value["role"]))) {
-        issues.push(`${path}.role: must be user, assistant, or toolResult`);
+      checkUnknownKeys(value, ["message"], path, issues);
+      if (!("message" in value)) issues.push(`${path}.message: is required`);
+      else {
+        for (const issue of collectProductMessageIssues(value["message"])) {
+          const suffix = issue.startsWith("message") ? issue.slice("message".length) : `.${issue}`;
+          issues.push(`${path}.message${suffix}`);
+        }
       }
-      if (!("content" in value)) issues.push(`${path}.content: is required`);
-      else collectJsonIssues(value["content"], `${path}.content`, issues, new Set());
-      optionalString(value, "provider", path, issues);
-      optionalString(value, "model", path, issues);
-      if (value["usage"] !== undefined) validateUsage(value["usage"], `${path}.usage`, issues);
       break;
     case "tool.requested":
       checkUnknownKeys(value, ["toolCallId", "toolName", "arguments"], path, issues);
@@ -388,12 +384,35 @@ function validatePayload(type: RunEventType, value: unknown, issues: string[]): 
     case "tool.decision":
       checkUnknownKeys(
         value,
-        ["toolCallId", "toolName", "decision", "reasonCode", "detail"],
+        ["toolCallId", "toolName", "capability", "capabilities", "decision", "reasonCode", "detail"],
         path,
         issues,
       );
       requireString(value, "toolCallId", path, issues);
       requireString(value, "toolName", path, issues);
+      requireString(value, "capability", path, issues);
+      if (!Array.isArray(value["capabilities"]) || value["capabilities"].length === 0) {
+        issues.push(`${path}.capabilities: must be a non-empty array`);
+      } else {
+        const capabilities = value["capabilities"];
+        for (let index = 0; index < capabilities.length; index += 1) {
+          if (typeof capabilities[index] !== "string" || capabilities[index].length === 0) {
+            issues.push(`${path}.capabilities[${index}]: must be a non-empty string`);
+          }
+        }
+        if (new Set(capabilities).size !== capabilities.length) {
+          issues.push(`${path}.capabilities: must not contain duplicates`);
+        }
+        if (capabilities.some((capability, index) => index > 0 && capability < capabilities[index - 1])) {
+          issues.push(`${path}.capabilities: must be sorted`);
+        }
+        if (
+          typeof value["capability"] === "string" &&
+          !capabilities.includes(value["capability"])
+        ) {
+          issues.push(`${path}.capability: must be present in capabilities`);
+        }
+      }
       if (!new Set(["allow", "deny", "requireApproval"]).has(String(value["decision"]))) {
         issues.push(`${path}.decision: must be allow, deny, or requireApproval`);
       }
@@ -456,16 +475,31 @@ function validatePayload(type: RunEventType, value: unknown, issues: string[]): 
       optionalString(value, "reasonCode", path, issues);
       break;
     case "turn.completed":
-      checkUnknownKeys(value, ["stopReason", "usage"], path, issues);
+      checkUnknownKeys(value, ["stopReason", "usage", "budget"], path, issues);
       if (!new Set(["stop", "length", "toolUse", "error", "aborted"]).has(String(value["stopReason"]))) {
         issues.push(`${path}.stopReason: is missing or unknown`);
       }
       if (value["usage"] !== undefined) validateUsage(value["usage"], `${path}.usage`, issues);
+      if (!isObject(value["budget"])) {
+        issues.push(`${path}.budget: must be an object`);
+      } else {
+        checkUnknownKeys(value["budget"], ["tokens", "source"], `${path}.budget`, issues);
+        if (!isWholeNumber(value["budget"]["tokens"]) || (value["budget"]["tokens"] as number) < 0) {
+          issues.push(`${path}.budget.tokens: must be a non-negative whole number`);
+        }
+        if (value["budget"]["source"] !== "anchored" && value["budget"]["source"] !== "estimated") {
+          issues.push(`${path}.budget.source: must be anchored or estimated`);
+        }
+      }
       break;
     case "run.completed":
       checkUnknownKeys(value, ["reason", "usage"], path, issues);
-      if (value["reason"] !== "stop" && value["reason"] !== "maxTurns") {
-        issues.push(`${path}.reason: must be stop or maxTurns`);
+      if (
+        value["reason"] !== "stop" &&
+        value["reason"] !== "maxTurns" &&
+        value["reason"] !== "needsApproval"
+      ) {
+        issues.push(`${path}.reason: must be stop, maxTurns, or needsApproval`);
       }
       if (value["usage"] !== undefined) validateUsage(value["usage"], `${path}.usage`, issues);
       break;

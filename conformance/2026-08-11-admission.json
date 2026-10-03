@@ -1,0 +1,71 @@
+{
+  "schemaVersion": 1,
+  "kind": "local-inference-admission",
+  "generatedAt": "2026-08-11T11:11:24.362Z",
+  "target": {
+    "runtime": "ollama",
+    "modelId": "qwen3:4b",
+    "contextWindow": 8192
+  },
+  "policy": {
+    "maxResidentModels": 1,
+    "maxConcurrentSequences": 1,
+    "deploymentHeadroomBytes": 536870912,
+    "maxCapabilityObservationAgeMs": 604800000,
+    "loadTimeoutMs": 120000,
+    "capacityAction": "reject"
+  },
+  "before": {
+    "runtimeId": "ollama",
+    "observedAt": "2026-08-11T11:10:55.516Z",
+    "freeMemoryBytes": 5690831667,
+    "memorySource": "OLLAMA_ADMISSION_FREE_BYTES (deployment/runtime measurement)",
+    "models": [],
+    "issues": []
+  },
+  "description": {
+    "modelId": "qwen3:4b",
+    "digest": "359d7dd4bcdab3d86b87d73ac27966f4dbb9f5efdfcc75d34a8764a09474fae7",
+    "quantization": "Q4_K_M",
+    "geometry": {
+      "paramCount": 4022468096,
+      "layers": 36,
+      "kvHeads": 8,
+      "keyDim": 128,
+      "valueDim": 128
+    },
+    "weightsBytes": 2497293931
+  },
+  "result": {
+    "outcome": "admitted",
+    "state": "busy",
+    "reasons": [],
+    "estimate": {
+      "weightsBytes": 2497293931,
+      "kvBytesPerToken": 147456,
+      "kvBytes": 1207959552,
+      "runtimeBytes": 8388608,
+      "fixedOverheadBytes": 64000000,
+      "totalBytes": 3777642091
+    },
+    "after": {
+      "runtimeId": "ollama",
+      "observedAt": "2026-08-11T11:11:24.264Z",
+      "freeMemoryBytes": 5690831667,
+      "memorySource": "OLLAMA_ADMISSION_FREE_BYTES (deployment/runtime measurement)",
+      "models": [
+        {
+          "modelId": "qwen3:4b",
+          "digest": "359d7dd4bcdab3d86b87d73ac27966f4dbb9f5efdfcc75d34a8764a09474fae7",
+          "quantization": "Q4_K_M",
+          "servedContextWindow": 8192,
+          "residentBytes": 3777935441,
+          "acceleratorBytes": 3777935441,
+          "expiresAt": "2026-08-11T16:16:23.407813+05:00"
+        }
+      ],
+      "issues": []
+    }
+  },
+  "verdict": "pass"
+}

@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-08-21T11:52:50.913Z",
+  "inventorySchemaVersion": 1,
+  "environment": {
+    "postgresVersion": "18.6 (Debian 18.6-1.pgdg12+2)",
+    "pgvectorVersion": "0.8.6",
+    "dbmateVersion": "2.35.0",
+    "migrationVersions": [
+      "20260819000100",
+      "20260821000200"
+    ]
+  },
+  "recoveryObjectives": {
+    "rpoMinutes": 15,
+    "rtoMinutes": 240,
+    "restoreDrillCadenceDays": 92,
+    "backupRetentionDays": 35,
+    "restoreMode": "isolated-then-reconciled"
+  },
+  "checks": {
+    "machineReadableResidencyInventory": "passed",
+    "metadataOnlyLogCanaries": "passed",
+    "backupRestoreOrderingAndSchemaVersions": "passed",
+    "migrationDownUpRecovery": "passed",
+    "databaseOutageEncryptedSpoolReplay": "passed",
+    "searchAfterErasure": "passed",
+    "airGappedEgressDenial": "passed",
+    "interruptedStreamTerminalWithoutAssistantMessage": "passed"
+  },
+  "backupArchiveDigest": "sha256:3d4d19826651b9899871a38bbaa1282ec0ee2a616ae488dcb524c4c85564b1cb",
+  "destructiveScope": {
+    "sourceDatabaseName": "sovereign_b7_source_20260821",
+    "restoreDatabaseName": "sovereign_b7_restore_20260821"
+  }
+}

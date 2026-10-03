@@ -1,0 +1,15 @@
+{
+  "ollama": {
+    "baseUrl": "http://inference:11434/v1",
+    "name": "Ollama (single-node internal)",
+    "models": [
+      {
+        "id": "qwen3:4b",
+        "name": "Qwen3 4B (single-node internal)",
+        "contextWindow": 8192,
+        "maxTokens": 2048,
+        "reasoning": true
+      }
+    ]
+  }
+}

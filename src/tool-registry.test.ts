@@ -2,7 +2,59 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { Type } from "@earendil-works/pi-ai";
 import type { ToolCall } from "@earendil-works/pi-ai";
-import { dispatchToolCall, dispatchToolCalls, ToolRegistry, type ToolHandler } from "./tool-registry.ts";
+import { CapabilityPolicy } from "./policy.ts";
+import {
+  dispatchToolCall as dispatchToolCallRaw,
+  dispatchToolCalls as dispatchToolCallsRaw,
+  ToolRegistry,
+  type ToolControlDeclaration,
+  type ToolDispatchOptions,
+  type ToolHandler,
+} from "./tool-registry.ts";
+
+function controls(overrides: Partial<ToolControlDeclaration> = {}): ToolControlDeclaration {
+  return {
+    capabilities: ["net"],
+    risk: "low",
+    timeoutMs: 1_000,
+    maxOutputChars: 10_000,
+    concurrencyCost: 1,
+    sideEffect: "none",
+    idempotency: "natural",
+    ...overrides,
+  };
+}
+
+const testPolicy = new CapabilityPolicy({
+  rules: [{
+    deploymentId: "*",
+    roleId: "*",
+    workspaceId: "*",
+    capability: "*",
+    decision: "allow",
+    reasonCode: "test.allowed",
+  }],
+});
+const policyOptions = {
+  policy: testPolicy,
+  policyContext: { deploymentId: "test", roleId: "test", workspaceId: "test" },
+};
+
+function dispatchToolCall(
+  toolCall: ToolCall,
+  registry: ToolRegistry,
+  options: ToolDispatchOptions = {},
+) {
+  return dispatchToolCallRaw(toolCall, registry, { ...policyOptions, ...options });
+}
+
+function dispatchToolCalls(
+  toolCalls: ToolCall[],
+  registry: ToolRegistry,
+  options: ToolDispatchOptions = {},
+) {
+  return dispatchToolCallsRaw(toolCalls, registry, { ...policyOptions, ...options });
+}
 
 function weatherHandler(overrides: Partial<ToolHandler> = {}): ToolHandler {
   return {
@@ -11,6 +63,7 @@ function weatherHandler(overrides: Partial<ToolHandler> = {}): ToolHandler {
       description: "Get the weather for a city",
       parameters: Type.Object({ city: Type.String() }),
     },
+    controls: controls(),
     async execute(args) {
       return { content: [{ type: "text", text: `sunny in ${String(args["city"])}` }] };
     },
@@ -143,6 +196,7 @@ test("one failing call does not lose the results of the others", async () => {
   registry.register(weatherHandler());
   registry.register({
     definition: { name: "boom", description: "always fails", parameters: Type.Object({}) },
+    controls: controls(),
     async execute() {
       throw new Error("boom");
     },
@@ -243,6 +297,7 @@ test("REGRESSION: a zero-argument tool works with absent `arguments`", async () 
   let ran = false;
   registry.register({
     definition: { name: "ping", description: "no args", parameters: Type.Object({}) },
+    controls: controls(),
     async execute() {
       ran = true;
       return { content: [{ type: "text", text: "pong" }] };
@@ -263,6 +318,7 @@ test("REGRESSION: a handler returning the wrong shape yields an isError result, 
   const registry = new ToolRegistry();
   registry.register({
     definition: { name: "bad", description: "d", parameters: Type.Object({}) },
+    controls: controls(),
     // Reachable through `any`, a JSON.parse, or a plugin boundary.
     execute: (async () => ({})) as unknown as ToolHandler["execute"],
   });
@@ -282,6 +338,7 @@ test("a handler returning null or undefined is reported the same way", async () 
   for (const [name, value] of [["nully", null], ["undef", undefined]] as const) {
     registry.register({
       definition: { name, description: "d", parameters: Type.Object({}) },
+      controls: controls(),
       execute: (async () => value) as unknown as ToolHandler["execute"],
     });
     const result = await dispatchToolCall(
@@ -300,6 +357,7 @@ test("REGRESSION: registering a duplicate tool name is rejected, not silently ap
   const registry = new ToolRegistry();
   const tool = (name: string): ToolHandler => ({
     definition: { name, description: "d", parameters: Type.Object({}) },
+    controls: controls(),
     async execute() {
       return { content: [{ type: "text", text: name }] };
     },
@@ -308,4 +366,111 @@ test("REGRESSION: registering a duplicate tool name is rejected, not silently ap
   registry.register(tool("dup"));
   assert.throws(() => registry.register(tool("dup")), /already registered/);
   assert.equal(registry.getToolDefinitions().length, 1);
+});
+
+test("control declarations are required, validated, sorted, and snapshotted", () => {
+  const registry = new ToolRegistry();
+  assert.throws(
+    () => registry.register({
+      definition: { name: "missing", description: "d", parameters: Type.Object({}) },
+      async execute() {
+        return { content: [] };
+      },
+    } as unknown as ToolHandler),
+    /must declare controls/,
+  );
+  assert.throws(
+    () => registry.register(weatherHandler({ controls: controls({ timeoutMs: Number.NaN }) })),
+    /timeoutMs must be a positive whole number/,
+  );
+
+  const capabilities = ["net", "fs.read"];
+  registry.register(weatherHandler({ controls: controls({ capabilities }) }));
+  capabilities.push("exec");
+  assert.deepEqual(registry.get("get_weather")?.controls.capabilities, ["fs.read", "net"]);
+});
+
+test("dispatch without an authenticated policy fails closed before execute", async () => {
+  const registry = new ToolRegistry();
+  let ran = false;
+  registry.register(weatherHandler({
+    async execute() {
+      ran = true;
+      return { content: [{ type: "text", text: "unsafe" }] };
+    },
+  }));
+  const lifecycle: string[] = [];
+  const result = await dispatchToolCallRaw(call("get_weather", { city: "Paris" }), registry, {
+    onDecision: (_call, decision) => {
+      lifecycle.push(`decision:${decision.reasonCode}`);
+    },
+    onStarted: () => {
+      lifecycle.push("started");
+    },
+    onCompleted: () => {
+      lifecycle.push("completed");
+    },
+  });
+
+  assert.equal(ran, false);
+  assert.equal(result.isError, true);
+  assert.match(textOf(result), /policy\.unconfigured/);
+  assert.deepEqual(lifecycle, ["decision:policy.unconfigured", "completed"]);
+});
+
+test("an approval decision suspends the whole batch before any sibling starts", async () => {
+  const registry = new ToolRegistry();
+  let executions = 0;
+  registry.register(weatherHandler({
+    async execute() {
+      executions += 1;
+      return { content: [{ type: "text", text: "ran" }] };
+    },
+  }));
+  const policy = new CapabilityPolicy({
+    rules: [
+      {
+        deploymentId: "test",
+        roleId: "test",
+        workspaceId: "test",
+        capability: "net",
+        argumentEquals: { city: "Paris" },
+        decision: "requireApproval",
+        reasonCode: "network.destination-approval-required",
+      },
+      {
+        deploymentId: "test",
+        roleId: "test",
+        workspaceId: "test",
+        capability: "net",
+        decision: "allow",
+        reasonCode: "network.allowed",
+      },
+    ],
+  });
+  const lifecycle: string[] = [];
+  const results = await dispatchToolCallsRaw(
+    [
+      call("get_weather", { city: "Paris" }, "approval"),
+      call("get_weather", { city: "Berlin" }, "allowed"),
+    ],
+    registry,
+    {
+      policy,
+      policyContext: policyOptions.policyContext,
+      onDecision: (toolCall, decision) => {
+        lifecycle.push(`${toolCall.id}:${decision.decision}`);
+      },
+      onStarted: (toolCall) => {
+        lifecycle.push(`${toolCall.id}:started`);
+      },
+      onCompleted: (toolCall) => {
+        lifecycle.push(`${toolCall.id}:completed`);
+      },
+    },
+  );
+
+  assert.equal(executions, 0, "the allowed sibling must not cross the approval boundary");
+  assert.equal(results.every((result) => result.isError), true);
+  assert.deepEqual(lifecycle, ["approval:requireApproval", "allowed:allow"]);
 });

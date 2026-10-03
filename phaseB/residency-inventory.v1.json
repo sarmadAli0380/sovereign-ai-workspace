@@ -1,0 +1,118 @@
+{
+  "schemaVersion": 1,
+  "deploymentBoundary": "single-client-security-tenant",
+  "defaultExternalTelemetry": false,
+  "recovery": {
+    "rpoMinutes": 15,
+    "rtoMinutes": 240,
+    "restoreDrillCadenceDays": 92,
+    "backupRetentionDays": 35,
+    "restoreMode": "isolated-then-reconciled"
+  },
+  "physicalErasure": {
+    "database": "Logical deletion and retrieval denial are immediate. Autovacuum remains enabled; bulk erasure is followed by VACUUM (ANALYZE), and vector indexes are reindexed when dead tuples reach ten percent. These operations reclaim reusable space but are not claimed as forensic overwrite.",
+    "backups": "Encrypted backups are immutable, expire after at most 35 days, and are never restored directly into service. A restore stays isolated until current erasure records are reapplied and every B6 retrieval check passes.",
+    "cryptographicBoundary": "Storage encryption and keys are deployment-owned. Emergency forensic erasure requires destruction of the affected deployment key or volume in addition to logical erasure."
+  },
+  "stores": [
+    {
+      "id": "database",
+      "state": "implemented",
+      "location": "client-managed-postgresql",
+      "contentMode": "content-bearing",
+      "dataClasses": ["users", "sessions", "role-grants", "model-grants", "conversations", "messages", "run-events", "tool-records", "approvals", "attachment-metadata", "erasure-state"],
+      "egress": "none",
+      "encryption": "deployment-required",
+      "retention": "policy-controlled",
+      "erasure": "transactional-tombstone-then-seven-store-reconciliation"
+    },
+    {
+      "id": "object-storage",
+      "state": "implemented",
+      "location": "client-managed-local-disk-or-s3-compatible",
+      "contentMode": "content-bearing",
+      "dataClasses": ["attachment-bytes"],
+      "egress": "deployment-allowlisted-internal-only",
+      "encryption": "deployment-required",
+      "retention": "policy-controlled",
+      "erasure": "outbox-driven-object-delete-and-reconciliation"
+    },
+    {
+      "id": "embeddings",
+      "state": "implemented",
+      "location": "client-managed-postgresql-pgvector",
+      "contentMode": "derived-content",
+      "dataClasses": ["local-embedding-vectors", "model-manifest"],
+      "egress": "loopback-local-model-only",
+      "encryption": "deployment-required",
+      "retention": "source-bound",
+      "erasure": "delete-vector-before-source-and-reconcile"
+    },
+    {
+      "id": "indexes",
+      "state": "implemented",
+      "location": "client-managed-postgresql",
+      "contentMode": "derived-content",
+      "dataClasses": ["hnsw-vector-index", "lexical-index"],
+      "egress": "none",
+      "encryption": "deployment-required",
+      "retention": "source-bound",
+      "erasure": "logical-delete-then-vacuum-analyze-and-threshold-reindex"
+    },
+    {
+      "id": "logs",
+      "state": "implemented",
+      "location": "client-managed-operational-sink",
+      "contentMode": "metadata-only",
+      "dataClasses": ["event-identities", "types", "timings", "byte-counts", "machine-codes"],
+      "egress": "none-by-default",
+      "encryption": "deployment-required-if-durable",
+      "retention": "operator-configured-metadata-only",
+      "erasure": "no-client-content-permitted"
+    },
+    {
+      "id": "caches",
+      "state": "not-implemented",
+      "location": "absent-unless-deployment-adapter-is-installed",
+      "contentMode": "content-bearing",
+      "dataClasses": ["provider-prefix-cache", "application-cache"],
+      "egress": "none-by-default",
+      "encryption": "deployment-required-if-installed",
+      "retention": "bounded-if-installed",
+      "erasure": "exactly-one-b6-adapter-required-if-installed"
+    },
+    {
+      "id": "temp-files",
+      "state": "implemented",
+      "location": "client-managed-private-quarantine-and-spool",
+      "contentMode": "content-bearing",
+      "dataClasses": ["attachment-quarantine", "encrypted-event-spool", "bounded-derivatives"],
+      "egress": "none",
+      "encryption": "event-spool-aes-256-gcm; attachment-volume-deployment-required",
+      "retention": "operation-scoped-or-bounded-spool",
+      "erasure": "finally-cleanup-plus-b6-adapter-reconciliation"
+    },
+    {
+      "id": "backups",
+      "state": "deployment-provided",
+      "location": "client-managed-encrypted-backup-boundary",
+      "contentMode": "content-bearing",
+      "dataClasses": ["database-backup", "object-backup", "wal"],
+      "egress": "deployment-allowlisted-internal-only",
+      "encryption": "deployment-required-separate-key-boundary",
+      "retention": "maximum-35-days",
+      "erasure": "immutable-until-expiry; isolated-restore-must-reapply-erasure"
+    },
+    {
+      "id": "telemetry",
+      "state": "optional-disabled-by-default",
+      "location": "no-default-destination",
+      "contentMode": "metadata-only",
+      "dataClasses": ["aggregate-latency", "counts", "machine-codes"],
+      "egress": "none-by-default",
+      "encryption": "deployment-required-if-enabled",
+      "retention": "operator-configured-metadata-only",
+      "erasure": "no-client-content-permitted"
+    }
+  ]
+}

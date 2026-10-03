@@ -277,6 +277,96 @@ code in front of you, trust the code and fix the summary.
 
 ---
 
+## 12. Mixing failed observations into performance distributions
+
+**What happened.** The first A0-M.3 aggregation correctly failed the overall
+profile when provider calls failed, but it also put those samples' synthetic
+zero throughput and zero tool-dispatch values into the latency/throughput
+percentiles. The report was fail closed and still statistically wrong.
+
+The same verifier initially required its excluded warm-up to conform. A
+stochastic warm-up failure then prevented collection of the measured
+population it was supposed to warm. Later, an arbitrary 64-token benchmark
+cap made Qwen fail before a tool call even though the configured deployment
+and established live verifier passed.
+
+**The rule.** Availability/conformance and conditional performance are two
+different populations. Failed samples determine failure rate and verdict;
+only conformant samples describe successful-operation latency and throughput.
+An excluded warm-up cannot qualify or veto the measured run. Any synthetic
+workload control must be calibrated against the supported profiles and stored
+in the artifact.
+
+**The check.** Inject a failed sample with zero-valued metrics and assert that
+the verdict/failure rate changes while successful-operation percentiles do
+not. Inject an all-failed population and require `metrics: null`, never a
+fabricated zero distribution. Confirm the report records warm-up exclusion,
+generation cap, tool choice, and workload identity.
+
+---
+
+## 13. A batch gate inside an execution loop is not a batch gate
+
+**What happened.** Approval resume authenticated one submission, acknowledged
+its resolution, and immediately executed that tool before inspecting the next
+submission. The one-call tests were green, but a two-call resume could perform
+the first side effect and only then discover that the second authorization was
+invalid or its journal acknowledgement failed.
+
+The first MCP registration draft had the same shape: validate and publish one
+remote tool at a time. A later invalid declaration could have left an earlier
+tool active even though server admission as a whole failed.
+
+**The rule.** For a batch safety boundary, finish the entire read/validate/
+authenticate/acknowledge phase before the first execute or publish operation.
+Do not interleave validation and mutation merely because both happen in one
+loop.
+
+**The check.** Use at least two items. Make the second fail at the last gate and
+assert the first item neither executed nor became visible. A one-item batch
+test cannot prove batch atomicity.
+
+---
+
+## 14. Cleanup begins when the temporary resource exists
+
+**What happened.** The first B4 ingestion path created a quarantine file,
+then validated the content-bound attachment ID before entering its `try` /
+`finally` cleanup scope. A malformed caller ID could reject the upload and
+leave the private temporary file behind even though size and MIME failure
+paths cleaned up correctly.
+
+**The rule.** Enter ownership cleanup immediately after a temporary resource
+is created. Every later operation, including identity generation, metadata
+validation, object publication, and database writes, must run inside that
+scope.
+
+**The check.** Fail at the first operation after staging and assert the
+quarantine directory is empty. Also fail after object publication and assert
+both the staged name and the uncommitted object are removed.
+
+---
+
+## 15. A tombstone check at statement start does not govern an older transaction
+
+**What happened.** B6 initially checked the erasure tombstone in every
+repository write and snapshotted all affected rows in the request statement.
+That looked atomic and passed deterministic tests. It still allowed a write
+transaction to insert before the request, remain uncommitted while the request
+captured its scope, and commit after erasure. The content would be hidden by the
+read view but absent from the worker's deletion scope.
+
+**The rule.** A state transition that revokes future writes must govern
+transactions that already crossed the write boundary, not only statements that
+start afterward. Immediate filtering and asynchronous deletion are separate
+invariants; neither proves the other.
+
+**The check.** Hold a real content insert open in one database connection,
+commit the tombstone from another, then attempt the old commit. It must fail and
+leave no row. A sequential "write after tombstone" test cannot reach this race.
+
+---
+
 ## Pre-flight checklist
 
 Before writing code:

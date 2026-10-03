@@ -29,9 +29,18 @@ Not restated in the phases below, because it exists and is verified.
 | Memory sizing | measured, validated across two model families |
 | Live verification | two providers, genuine cross-provider swap |
 | Run/event contract | versioned typed events, runtime validation, ordered-run invariants, audience redaction |
+| Bounded agent run | required turn/deadline bounds, canonical event mapping, cancellation, terminal reasons |
+| Tool capability policy | required control declarations, deterministic fail-closed decisions, pre-execution audit events, approval batch suspension |
+| Context compilation | versioned deterministic prompts, stable tools, bounded provider projection, content-free fingerprints |
+| Cache conformance | machine-readable cold/warm/invalidation/truncation probes; Codex observed, Qwen explicitly unverified |
+| Truncation decision | drop-oldest default retained; deterministic prefix compaction measured as an opt-in candidate |
+| Model capability record | versioned declared/observed evidence with provenance, freshness, health and fail-closed route assessment |
+| Local model admission | runtime inspection, sizing/headroom, resident/sequence limits, explicit load and degradation states |
 
-**Roughly 10–15% of the product, and it is the bottom layer.** Everything
-below is new work.
+This is still the product's bottom layer rather than a user-facing workspace.
+Phase B, the P3.1 single-node substrate, and the C1-C4 authenticated durable
+server path have since been built; the web UI and the packaged governance
+surface below remain product work.
 
 ---
 
@@ -40,10 +49,15 @@ below is new work.
 *Turns a model call into something that can do work.*
 
 **Designed: `phaseA/adrs/A1-agent-runtime.md`.** A0.1's event contract and
-audience projections are implemented; the streaming run loop and tool-policy
-work remain.
+audience projections, A0.2's transport, and A1's streaming bounded run loop
+and A2.1's capability-policy gateway are implemented. A2.2's execution
+controls and A2.3's opt-in built-in tools are also implemented; approval
+resume is implemented as A3's persistence-ready process-local controller;
+MCP and the C1-C4 HTTP/SSE, identity, control, approval, and product-read server
+path are implemented.
 
-- An agent loop over `step()` — turn limits, cancellation, streaming out.
+- An agent loop over `step()` — turn limits, deadline/cancellation, streaming
+  out. **Implemented deterministically; live provider stream conformance remains.**
 - A built-in tool suite: file read/write, search, shell, HTTP. Each one a
   security boundary in a client deployment, so scoping is part of the
   design, not an afterthought.
@@ -61,25 +75,37 @@ single transition underneath.
 
 *The sovereignty claim lives or dies here.*
 
-**Designed: `phaseB/adrs/B1-persistence-and-residency.md`.** Not yet
-implemented. Note it revises 1.5: truncation becomes a projection rather
-than a mutation, because dropping a message from the model's window must not
-delete it from the user's history.
+**Designed: `phaseB/adrs/B1-persistence-and-residency.md`; B1-B7 implemented
+and verified through 2026-08-21.** A0.3's versioned message contract/runtime
+codec, explicit PostgreSQL repositories, complete-history/provider-window
+projection, durable journal/outbox, attachment ingestion, and local
+embeddings/search, convergent verified erasure, and residency/recovery
+operational proof are implemented.
 
-- Postgres schema: users, conversations, messages, tool calls, attachments.
+- PostgreSQL schema and repositories: users, conversations, runs/turns,
+  messages, tool calls/decisions, approvals, attachments, journal/audit,
+  outbox/checkpoints, and erasure jobs.
 - Versioned product message envelopes, so stored history is not coupled to a
   `pi-ai` package version.
-- `ConversationManager` currently holds one conversation in memory in one
-  process. It needs to load from and write to storage without losing the
-  budgeting work already done.
+- `ConversationManager` stores complete loaded history and projects a bounded
+  provider window without losing the budgeting work already done.
 - File and attachment storage on the client's disk or object store.
-- Embeddings and vector search **in the client's database** — pgvector.
-  Embeddings are derived from client data and are client data.
+- Embeddings and vector search **in the client's database** — pgvector, with
+  local Ollama `nomic-embed-text:v1.5` pinned by live digest evidence.
 - Retention and deletion that actually deletes, including from indexes.
 - Durable journal/outbox and idempotent erasure workflows across database,
   object storage, embeddings, caches, and search.
 
 ## Phase C — the server
+
+**C1-C4 implemented 2026-08-25:** one-time bootstrap bearer authentication,
+PostgreSQL session issuance/revocation and current role/model grants, RBAC plus
+PostgreSQL ownership, caller-idempotent durable user commands, complete history
+reload, local-model admission, bounded runtime execution, durable SSE
+replay/live fan-out, authenticated durable approval listing/resolution,
+PostgreSQL-backed per-user/model concurrency, rate/token/spend controls,
+bounded ownership-filtered product reads, and one hardened loopback Compose
+ingress.
 
 - HTTP + SSE API in front of the agent runtime.
 - Authentication, sessions, and RBAC. Deployed per client, so a single
@@ -115,6 +141,16 @@ delete it from the user's history.
 Breadth here is measured in *verified* models, never in adapter count.
 
 ## Phase F — deployment
+
+**P3.1 substrate implemented 2026-08-24 and extended through C4 on 2026-08-25:** digest-pinned runtime,
+PostgreSQL/pgvector, and Ollama images; an internal-only Compose data plane;
+file secrets; persistent volumes; one-shot model bootstrap, migrations,
+readiness, backup, and the C4 server as the sole loopback ingress. This is not
+the complete Phase F gate because target-host, TLS-ingress, accelerator, and
+full operational evidence are recorded separately.
+Development evidence is in
+`conformance/2026-08-24-single-node-deployment.json`; target-host repetition is
+a pre-production gate.
 
 - One `docker-compose` bringing up app, database, vector store, and
   inference engine on a fresh server.

@@ -29,6 +29,7 @@
     "provider": "ollama",
     "modelId": "qwen3:4b",
     "maxTokens": 2048,
-    "contextWindow": 8192
+    "contextWindow": 8192,
+    "maxTokensHonored": true
   }
 }

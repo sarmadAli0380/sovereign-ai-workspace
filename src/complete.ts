@@ -19,7 +19,14 @@
  */
 
 import { retryAssistantCall, type RetryPolicy } from "@earendil-works/pi-ai";
-import type { Api, AssistantMessage, Context, Model, Models } from "@earendil-works/pi-ai";
+import type {
+  Api,
+  AssistantMessage,
+  Context,
+  Model,
+  Models,
+  StreamOptions,
+} from "@earendil-works/pi-ai";
 import { callOptions } from "./load-model.ts";
 import type { ConfigEntry } from "./config.ts";
 import type { HarnessResult } from "./types.ts";
@@ -58,12 +65,17 @@ export interface CompleteOptions {
   onRetry?: (attempt: number, maxAttempts: number, delayMs: number, error: string) => void;
 }
 
-/** One model call, retried on transient failure, returned as a `HarnessResult`. */
-export async function complete(
-  models: Models,
-  model: Model<Api>,
+type AssistantCall = (options: StreamOptions) => Promise<AssistantMessage>;
+
+/**
+ * Shared retry/result wrapper for the non-streaming convenience call and
+ * `step()`'s streamed call. It is not re-exported from the package entry point;
+ * its purpose is to keep the two paths aligned on timeouts, cancellation,
+ * retry classification, and HarnessResult metadata.
+ */
+export async function completeAssistantCall(
+  produce: AssistantCall,
   entry: ConfigEntry,
-  context: Context,
   configKey: string,
   options: CompleteOptions = {},
 ): Promise<HarnessResult> {
@@ -76,9 +88,9 @@ export async function complete(
     throw new TypeError(`timeoutMs must be a finite positive number, got ${options.timeoutMs}.`);
   }
 
-  const message: AssistantMessage = await retryAssistantCall(
+  const message = await retryAssistantCall(
     () =>
-      models.complete(model, context, {
+      produce({
         ...callOptions(entry),
         // retryAssistantCall uses the signal for backoff sleeps, but it does
         // not inject it into the provider request. Both are needed: without
@@ -86,7 +98,7 @@ export async function complete(
         // request could continue until the provider's own timeout.
         ...(options.signal ? { signal: options.signal } : {}),
         ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
-      }),
+      } satisfies StreamOptions),
     options.policy ?? DEFAULT_RETRY_POLICY,
     options.signal,
     {
@@ -102,4 +114,21 @@ export async function complete(
     routedVia: "native",
     latencyMs: Date.now() - started,
   };
+}
+
+/** One model call, retried on transient failure, returned as a `HarnessResult`. */
+export async function complete(
+  models: Models,
+  model: Model<Api>,
+  entry: ConfigEntry,
+  context: Context,
+  configKey: string,
+  options: CompleteOptions = {},
+): Promise<HarnessResult> {
+  return completeAssistantCall(
+    (streamOptions) => models.complete(model, context, streamOptions),
+    entry,
+    configKey,
+    options,
+  );
 }

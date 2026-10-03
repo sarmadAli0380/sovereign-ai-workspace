@@ -1,0 +1,390 @@
+{
+  "schemaVersion": 1,
+  "recordedAt": "2026-08-10T12:53:58.296Z",
+  "verdict": "pass",
+  "timingSemantics": {
+    "promptLatencyMs": "request start to first text, thinking, or tool-call stream event",
+    "generationLatencyMs": "first output stream event to terminal stream event",
+    "totalLatencyMs": "whole call including retry delays and failed attempts"
+  },
+  "targets": [
+    {
+      "schemaVersion": 1,
+      "recordedAt": "2026-08-10T12:53:58.296Z",
+      "configKey": "local-qwen",
+      "provider": "ollama",
+      "modelId": "qwen3:4b",
+      "contextWindow": 8192,
+      "stablePrefix": {
+        "minimumRequiredTokens": 1024,
+        "fixedOverheadTokens": 3023,
+        "systemTemplateVersion": "cache-conformance.system.v1",
+        "systemHash": "bac590f05e895b530f50ea4947e94946b8302bafc4a10a14651851f5958db235",
+        "toolsHash": "386c693b4afabd8ee7c4ccc0cff6b15f03d8d87d61e468b67f28ca19a97e49bf"
+      },
+      "probes": [
+        {
+          "label": "cold",
+          "kind": "cold",
+          "promptFingerprint": "0643856fa4c4f660fce600dd3ae4fa0b4fb644b327e7dada1fd6f54310c6a083",
+          "systemHash": "bac590f05e895b530f50ea4947e94946b8302bafc4a10a14651851f5958db235",
+          "toolsHash": "386c693b4afabd8ee7c4ccc0cff6b15f03d8d87d61e468b67f28ca19a97e49bf",
+          "fixedOverheadTokens": 3023,
+          "projectedHistoryMessages": 0,
+          "droppedHistoryMessages": 0,
+          "retainedStablePrefixTokens": 3023,
+          "providerPromptTokens": 7906,
+          "usage": {
+            "inputTokens": 7906,
+            "outputTokens": 256,
+            "cacheReadTokens": 0,
+            "cacheWriteTokens": 0,
+            "totalTokens": 8162
+          },
+          "costUsd": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "total": 0
+          },
+          "timing": {
+            "promptLatencyMs": 67099,
+            "generationLatencyMs": 27231,
+            "totalLatencyMs": 94330,
+            "retryCount": 0,
+            "measurement": "request-to-first-output-and-first-output-to-terminal"
+          },
+          "responseConformance": {
+            "verdict": "pass",
+            "issues": [],
+            "stopReason": "length"
+          }
+        },
+        {
+          "label": "warm-1",
+          "kind": "warm",
+          "promptFingerprint": "8dfbb7ae00da7933e186e56b107c373f9d11f6ac7741221fbcb80525f16e13bb",
+          "systemHash": "bac590f05e895b530f50ea4947e94946b8302bafc4a10a14651851f5958db235",
+          "toolsHash": "386c693b4afabd8ee7c4ccc0cff6b15f03d8d87d61e468b67f28ca19a97e49bf",
+          "fixedOverheadTokens": 3023,
+          "projectedHistoryMessages": 0,
+          "droppedHistoryMessages": 0,
+          "retainedStablePrefixTokens": 3023,
+          "providerPromptTokens": 7906,
+          "usage": {
+            "inputTokens": 7906,
+            "outputTokens": 256,
+            "cacheReadTokens": 0,
+            "cacheWriteTokens": 0,
+            "totalTokens": 8162
+          },
+          "costUsd": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "total": 0
+          },
+          "timing": {
+            "promptLatencyMs": 1413,
+            "generationLatencyMs": 34168,
+            "totalLatencyMs": 35583,
+            "retryCount": 0,
+            "measurement": "request-to-first-output-and-first-output-to-terminal"
+          },
+          "responseConformance": {
+            "verdict": "pass",
+            "issues": [],
+            "stopReason": "length"
+          }
+        },
+        {
+          "label": "warm-2",
+          "kind": "warm",
+          "promptFingerprint": "e23a4cb99a69e73fd5fedf664c0cb36106be85614cff0670b283eab1a4c2a0dd",
+          "systemHash": "bac590f05e895b530f50ea4947e94946b8302bafc4a10a14651851f5958db235",
+          "toolsHash": "386c693b4afabd8ee7c4ccc0cff6b15f03d8d87d61e468b67f28ca19a97e49bf",
+          "fixedOverheadTokens": 3023,
+          "projectedHistoryMessages": 0,
+          "droppedHistoryMessages": 0,
+          "retainedStablePrefixTokens": 3023,
+          "providerPromptTokens": 7906,
+          "usage": {
+            "inputTokens": 7906,
+            "outputTokens": 256,
+            "cacheReadTokens": 0,
+            "cacheWriteTokens": 0,
+            "totalTokens": 8162
+          },
+          "costUsd": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "total": 0
+          },
+          "timing": {
+            "promptLatencyMs": 3065,
+            "generationLatencyMs": 27377,
+            "totalLatencyMs": 30449,
+            "retryCount": 0,
+            "measurement": "request-to-first-output-and-first-output-to-terminal"
+          },
+          "responseConformance": {
+            "verdict": "pass",
+            "issues": [],
+            "stopReason": "length"
+          }
+        },
+        {
+          "label": "warm-3",
+          "kind": "warm",
+          "promptFingerprint": "78fca29f6ba9c519a2d45f4aab7ee0228c859c5a0ce0f59c81e45adeac0175f6",
+          "systemHash": "bac590f05e895b530f50ea4947e94946b8302bafc4a10a14651851f5958db235",
+          "toolsHash": "386c693b4afabd8ee7c4ccc0cff6b15f03d8d87d61e468b67f28ca19a97e49bf",
+          "fixedOverheadTokens": 3023,
+          "projectedHistoryMessages": 0,
+          "droppedHistoryMessages": 0,
+          "retainedStablePrefixTokens": 3023,
+          "providerPromptTokens": 7906,
+          "usage": {
+            "inputTokens": 7906,
+            "outputTokens": 215,
+            "cacheReadTokens": 0,
+            "cacheWriteTokens": 0,
+            "totalTokens": 8121
+          },
+          "costUsd": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "total": 0
+          },
+          "timing": {
+            "promptLatencyMs": 2534,
+            "generationLatencyMs": 26239,
+            "totalLatencyMs": 28780,
+            "retryCount": 0,
+            "measurement": "request-to-first-output-and-first-output-to-terminal"
+          },
+          "responseConformance": {
+            "verdict": "pass",
+            "issues": [],
+            "stopReason": "stop"
+          }
+        },
+        {
+          "label": "warm-4",
+          "kind": "warm",
+          "promptFingerprint": "fe357263059fa832a78903acdfe947953e4280570e4e3e9ffdd6a1155c1201b3",
+          "systemHash": "bac590f05e895b530f50ea4947e94946b8302bafc4a10a14651851f5958db235",
+          "toolsHash": "386c693b4afabd8ee7c4ccc0cff6b15f03d8d87d61e468b67f28ca19a97e49bf",
+          "fixedOverheadTokens": 3023,
+          "projectedHistoryMessages": 0,
+          "droppedHistoryMessages": 0,
+          "retainedStablePrefixTokens": 3023,
+          "providerPromptTokens": 7906,
+          "usage": {
+            "inputTokens": 7906,
+            "outputTokens": 256,
+            "cacheReadTokens": 0,
+            "cacheWriteTokens": 0,
+            "totalTokens": 8162
+          },
+          "costUsd": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "total": 0
+          },
+          "timing": {
+            "promptLatencyMs": 4827,
+            "generationLatencyMs": 34471,
+            "totalLatencyMs": 39304,
+            "retryCount": 0,
+            "measurement": "request-to-first-output-and-first-output-to-terminal"
+          },
+          "responseConformance": {
+            "verdict": "pass",
+            "issues": [],
+            "stopReason": "length"
+          }
+        },
+        {
+          "label": "warm-5",
+          "kind": "warm",
+          "promptFingerprint": "6195d86e169f37d285ecdd7ee10762141834cfc78903f832041d9295ad76b388",
+          "systemHash": "bac590f05e895b530f50ea4947e94946b8302bafc4a10a14651851f5958db235",
+          "toolsHash": "386c693b4afabd8ee7c4ccc0cff6b15f03d8d87d61e468b67f28ca19a97e49bf",
+          "fixedOverheadTokens": 3023,
+          "projectedHistoryMessages": 0,
+          "droppedHistoryMessages": 0,
+          "retainedStablePrefixTokens": 3023,
+          "providerPromptTokens": 7906,
+          "usage": {
+            "inputTokens": 7906,
+            "outputTokens": 256,
+            "cacheReadTokens": 0,
+            "cacheWriteTokens": 0,
+            "totalTokens": 8162
+          },
+          "costUsd": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "total": 0
+          },
+          "timing": {
+            "promptLatencyMs": 1881,
+            "generationLatencyMs": 32448,
+            "totalLatencyMs": 34331,
+            "retryCount": 0,
+            "measurement": "request-to-first-output-and-first-output-to-terminal"
+          },
+          "responseConformance": {
+            "verdict": "pass",
+            "issues": [],
+            "stopReason": "length"
+          }
+        },
+        {
+          "label": "system-byte-invalidation",
+          "kind": "system-byte-invalidation",
+          "promptFingerprint": "be647049ee4a99cfaf0a19e333aec532633e12c73281b951b9a4a3502ccd5907",
+          "systemHash": "46378e6491fca3a83b10aa6048276b315c9d37477132245839ce8aa4792b1d9e",
+          "toolsHash": "386c693b4afabd8ee7c4ccc0cff6b15f03d8d87d61e468b67f28ca19a97e49bf",
+          "fixedOverheadTokens": 3023,
+          "projectedHistoryMessages": 0,
+          "droppedHistoryMessages": 0,
+          "retainedStablePrefixTokens": 3023,
+          "providerPromptTokens": 7907,
+          "usage": {
+            "inputTokens": 7907,
+            "outputTokens": 256,
+            "cacheReadTokens": 0,
+            "cacheWriteTokens": 0,
+            "totalTokens": 8163
+          },
+          "costUsd": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "total": 0
+          },
+          "timing": {
+            "promptLatencyMs": 107662,
+            "generationLatencyMs": 97016,
+            "totalLatencyMs": 204686,
+            "retryCount": 0,
+            "measurement": "request-to-first-output-and-first-output-to-terminal"
+          },
+          "responseConformance": {
+            "verdict": "pass",
+            "issues": [],
+            "stopReason": "length"
+          }
+        },
+        {
+          "label": "tool-reorder",
+          "kind": "tool-reorder",
+          "promptFingerprint": "c5271ea94b8be9cc3a53388418cd22376b946fa21d5e58fd70947c1fd69654c6",
+          "systemHash": "bac590f05e895b530f50ea4947e94946b8302bafc4a10a14651851f5958db235",
+          "toolsHash": "386c693b4afabd8ee7c4ccc0cff6b15f03d8d87d61e468b67f28ca19a97e49bf",
+          "fixedOverheadTokens": 3023,
+          "projectedHistoryMessages": 0,
+          "droppedHistoryMessages": 0,
+          "retainedStablePrefixTokens": 3023,
+          "providerPromptTokens": 7907,
+          "usage": {
+            "inputTokens": 7907,
+            "outputTokens": 256,
+            "cacheReadTokens": 0,
+            "cacheWriteTokens": 0,
+            "totalTokens": 8163
+          },
+          "costUsd": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "total": 0
+          },
+          "timing": {
+            "promptLatencyMs": 32433,
+            "generationLatencyMs": 51892,
+            "totalLatencyMs": 84338,
+            "retryCount": 0,
+            "measurement": "request-to-first-output-and-first-output-to-terminal"
+          },
+          "responseConformance": {
+            "verdict": "pass",
+            "issues": [],
+            "stopReason": "length"
+          }
+        },
+        {
+          "label": "drop-oldest-truncation",
+          "kind": "drop-oldest-truncation",
+          "promptFingerprint": "f15c7e124392134ea519c115909fa540fd0e232085235ce754959ef305c2765b",
+          "systemHash": "bac590f05e895b530f50ea4947e94946b8302bafc4a10a14651851f5958db235",
+          "toolsHash": "386c693b4afabd8ee7c4ccc0cff6b15f03d8d87d61e468b67f28ca19a97e49bf",
+          "fixedOverheadTokens": 3023,
+          "projectedHistoryMessages": 4,
+          "droppedHistoryMessages": 7,
+          "retainedStablePrefixTokens": 3023,
+          "providerPromptTokens": 7907,
+          "usage": {
+            "inputTokens": 7907,
+            "outputTokens": 1,
+            "cacheReadTokens": 0,
+            "cacheWriteTokens": 0,
+            "totalTokens": 7908
+          },
+          "costUsd": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "total": 0
+          },
+          "timing": {
+            "promptLatencyMs": 6726,
+            "generationLatencyMs": 36,
+            "totalLatencyMs": 6769,
+            "retryCount": 0,
+            "measurement": "request-to-first-output-and-first-output-to-terminal"
+          },
+          "responseConformance": {
+            "verdict": "pass",
+            "issues": [],
+            "stopReason": "length"
+          }
+        }
+      ],
+      "invariants": {
+        "warmRepeats": 5,
+        "stablePrefixAboveMinimum": true,
+        "providerPromptAboveMinimum": true,
+        "warmSystemAndToolsStable": true,
+        "oneByteSystemChangeInvalidatedCompilerFingerprint": true,
+        "toolReorderingPreservedProviderContext": true,
+        "truncationExercised": true
+      },
+      "cacheEvidence": {
+        "metrics": "unreported-or-not-observed",
+        "cacheReadObserved": false,
+        "cacheWriteObserved": false,
+        "systemByteInvalidation": "unverified",
+        "toolReorderRetention": "unverified",
+        "truncationRetention": "unverified",
+        "note": "The runtime normalizes absent cache metrics to zero, so zero cannot distinguish unsupported, unreported, disabled, or a genuine miss. Latency is not used as proof."
+      },
+      "verdict": "pass"
+    }
+  ]
+}

@@ -74,6 +74,12 @@ export interface OpenAICompatibleProviderSpec {
  */
 const SELF_HOSTED_COMPAT: Model<"openai-completions">["compat"] = {
   maxTokensField: "max_tokens",
+  // The hosted default prefers the newer `developer` role for reasoning
+  // models. Self-hosted OpenAI-compatible servers are not required to
+  // implement it; measured Ollama behavior accepted the request but omitted
+  // that message from the evaluated prompt. `system` is the portable floor,
+  // and a provider that truly needs developer can override this in JSON.
+  supportsDeveloperRole: false,
 };
 
 /**

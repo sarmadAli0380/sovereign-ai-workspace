@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 1,
+  "kind": "local-embedding-manifest",
+  "recordedAt": "2026-08-21T10:28:37.006Z",
+  "verdict": "pass",
+  "issues": [],
+  "runtime": {
+    "provider": "ollama",
+    "version": "0.32.5",
+    "endpoint": "http://127.0.0.1:11434/api/embed"
+  },
+  "manifest": {
+    "provider": "ollama",
+    "model": "nomic-embed-text:v1.5",
+    "version": "v1.5",
+    "dimensions": 768,
+    "digest": "sha256:0a109f422b47e3a30ba2b10eca18548e944e8a23073ee3f3e947efcf3c45e59f",
+    "endpoint": "http://127.0.0.1:11434/api/embed"
+  },
+  "manifestDigest": "fa44811fe84e493a141ddfb37c4955902c5895cfcf03078236b36f10be6ed38e",
+  "modelMetadata": {
+    "sizeBytes": 274302450,
+    "modifiedAt": "2026-08-21T15:22:16.488139523+05:00",
+    "family": "nomic-bert",
+    "parameterSize": "137M",
+    "quantizationLevel": "F16",
+    "contextLength": 2048,
+    "embeddingLength": 768,
+    "architecture": "nomic-bert",
+    "parameterCount": 136727040
+  },
+  "probe": {
+    "inputPrefix": "search_query",
+    "vectorDimensions": 768,
+    "vectorSha256": "f7a3307792546ac4832f3a30c4e52d236bac7795aeb54f260fe55ca72c676586",
+    "durationNs": 240665334,
+    "promptEvalCount": 14
+  }
+}

@@ -2053,5 +2053,1120 @@ cannot reach audit or operational projections through object spreading.
 Streaming deltas are explicitly ephemeral: full delta content may target
 only the live UI, operational telemetry may receive its byte count, and both
 persistence and audit projections omit the event. Completed messages remain
-the canonical record. A0.3 will replace `message.completed.content`'s
-temporary JSON value with the versioned product message envelope.
+the canonical record. A0.3 subsequently replaced the temporary
+`message.completed.content` JSON value with the versioned product message
+envelope described below.
+
+---
+
+## A0.2: transport roles are explicit before runtime wiring, 2026-08-10
+
+The transport contract now exposes one ordered, typed in-process
+`AsyncIterable<RunEvent>`. Concurrent publishers are serialized, event/run
+invariants are checked at publication, and the event is snapshotted at the
+call boundary so later caller or sink mutation cannot change another
+consumer's view.
+
+Two sink roles are deliberately different. A required sink is awaited before
+live delivery and a rejection fails publication without exposing the event;
+this is the future Phase B journal acknowledgement boundary. Optional
+observers use isolated bounded queues, report overflow or sink failure, and
+never block model/tool execution. The implementation therefore does not
+encode telemetry as durability or allow a slow metric exporter to suspend a
+run.
+
+Reconnect checkpoints bind `runId`, `eventId`, and `sequence` and reject
+missing, inconsistent, cross-run, or out-of-order journal slices. The Phase C
+SSE mapping uses the stable event id as the SSE `id`, retains the canonical
+JSON event as `data`, and rejects line-break injection in control fields. It
+is a pure codec only: authenticated HTTP commands/approvals, server wiring,
+Postgres outbox delivery, and MCP registration remain deferred rather than
+being mocked in A0.2.
+
+---
+
+## A0.3: durable messages no longer inherit the runtime type, 2026-08-10
+
+The version-1 product message envelope now represents user text/images,
+assistant text/thinking/tool calls, and tool results without storing a
+`pi-ai` type directly. The mapper covers the installed 0.82.1 union's opaque
+text, thinking, and tool-call signatures; redacted thinking; tool-result
+details and deferred tool names; response model/id and diagnostics; reasoning
+and one-hour cache-write token breakdowns; and all USD cost fields. Optional
+runtime fields are copied when present and then validated, rather than using
+truthiness in a way that could silently turn malformed empty values into
+absence.
+
+Unknown provider data has one explicit content-bearing extension location.
+Nothing captures raw payloads by default. UI and persistence projections may
+receive an authorized copy; audit fingerprints it together with message
+content, and operational projection retains only sizes. Regression canaries
+prove provider-extension content cannot enter audit or logs.
+
+`stopReason: error` and `aborted` are not messages. Their mapper returns
+validated failed/cancelled run metadata, including provider identity and any
+reported usage/cost, while discarding partial or synthetic assistant content.
+The completed-message mapper rejects those outcomes so callers cannot persist
+them accidentally as conversation history.
+
+The checked-in version-1 JSON fixture is decoded without reference to the
+runtime message type, alongside a deliberately incompatible simulated future
+runtime shape. This proves the compatibility boundary that matters here: a
+dependency type change does not redefine historical JSON. It does not yet
+prove database migration or reload behavior; those remain Phase B gates.
+
+---
+
+## A0-P.1: complete history and provider context are separate inputs, 2026-08-10
+
+The context compiler now accepts an immutable complete-history input and
+returns one validated, bounded provider context. That boundary exists before
+durable history does: `ConversationManager` delegates outbound projection to
+the compiler but still applies its existing in-memory truncation on append.
+Phase B remains responsible for making the input genuinely complete across
+process restarts and long conversations.
+
+Prompt layout is deterministic. Independently versioned system instructions
+and tool definitions are sorted by stable identifiers; a single legacy system
+prompt keeps its exact wire shape. The result reports allocations for fixed
+system/tool overhead, history, retrieved context, current input, unused input,
+and output reserve. If fixed content, the current input, or the newest atomic
+tool-call/result group cannot fit, compilation fails rather than silently
+overrunning the configured window or breaking tool linkage.
+
+Retrieved material and tool results are wrapped as explicitly untrusted data
+before provider delivery. This is a model-facing warning, not an authorization
+boundary: deterministic policy still owns permissions and approvals. The
+compiler never mutates the stored/source messages while adding those markers.
+
+The prompt fingerprint contains layout/template/instruction versions and
+SHA-256 hashes only. Regression canaries cover system, history, retrieval, and
+current-input content so neither client text nor secret values can enter the
+fingerprint object. Tool reordering produces the same provider context and
+fingerprint; changing one content byte changes the digest. These deterministic
+properties are the prerequisite for A0-P.2's live cache probes, not proof that
+either provider caches the prompt.
+
+---
+
+## A0-P.2: Codex reports cache truth; Qwen does not, 2026-08-10
+
+`scripts/verify-cache.ts` now drives nine content-safe probes per target: one
+cold request, five identical-prefix/changing-suffix requests, a one-byte
+system-prompt change, source tool reordering, and a forced drop-oldest
+projection. The machine report records reconstructed provider prompt tokens,
+cache fields, cost, conformance, retry count, and explicit streaming timing
+semantics. It stores hashes and structural issue codes, never prompts,
+responses, or provider error text.
+
+Codex gave direct cache evidence. Its prompt measured 5,122 tokens. Four of
+five warm requests reported 4,608 cache-read tokens; one reported zero. Tool
+source order was reversed, the compiler produced the same provider layout,
+and the live request still reported 4,608 cache-read tokens. The one-byte
+system change reported zero, and the large truncated projection retained a
+4,608-token cache read. Cache writes remained zero. Those conclusions come
+from usage fields, not from latency.
+
+Qwen measured a 7,906-token prompt against a live `/api/ps` context of 8,192.
+All nine responses were structurally valid, and drop-oldest removed seven
+source messages while keeping the stable system/tool prefix. Every cache field
+was zero. Because pi-ai normalizes an absent field to zero, that cannot
+distinguish unsupported, unreported, disabled, or a real miss. The cold prompt
+phase was about 67 seconds and warm phases about 1–5 seconds; the byte-changed
+prompt took about 108 seconds. Those timings are observations only. Qwen cache
+retention and invalidation remain explicitly unverified.
+
+### The probe found a runtime defect before it found cache evidence
+
+The first Qwen attempts showed only ~193 input tokens no matter how large the
+system prompt became. The self-hosted provider inherited hosted OpenAI's
+`supportsDeveloperRole: true`; pi-ai therefore serialized the prompt as a
+`developer` message, which Ollama accepted but did not evaluate. That was a
+silent system-prompt loss, not a cache miss. Self-hosted compatibility now
+defaults to `supportsDeveloperRole: false`, using the portable `system` role,
+while an explicit provider override can opt back in. After the fix, the same
+probe measured 7,906 input tokens. A regression test locks the default and the
+override.
+
+Evidence is in `conformance/2026-08-10-cache-codex.json` and
+`conformance/2026-08-10-cache-qwen.json`. The earlier failed sandbox and
+probe-design attempts were superseded rather than presented as provider
+conformance.
+
+---
+
+## A0-P.3: prefix preservation improves retained facts, but not enough to replace the baseline, 2026-08-10
+
+The second strategy is deterministic prefix-preserving compaction, not
+generated summarization. It treats every span crossed by a tool-call/result
+link as one atomic unit, reserves a bounded old prefix, retains the newest
+suffix, and inserts one versioned omission manifest between them. The manifest
+stores the source indexes, source message count, and SHA-256 source hash. It
+contains no omitted message content, explicitly asserts no omitted facts, and
+declares `summaryGenerated: false` and `rebuildable: true`. This avoids turning
+model-generated prose into invisible historical truth while still making the
+projection gap explicit and auditable.
+
+The fixed corpus measures exact fact availability in the provider projection,
+not subjective answer grading. After an appended turn, drop-oldest retained
+two of six selected early/middle/recent facts; the candidate retained four.
+The common stable prefix increased from an estimated 620 tokens (system/tools
+only) to 1,220 (system/tools plus old source messages). Both strategies passed
+budget, source-immutability, response-shape, and tool-integrity gates on Codex
+and Qwen. Qwen `/api/ps` independently confirmed the configured 8,192-token
+served context.
+
+That improvement did not satisfy the selection rule. Both providers reported
+zero cache-read/write fields in this two-call append comparison, so the
+candidate's larger estimated cacheable prefix is not provider cache proof.
+Codex cost was essentially unchanged (candidate/baseline 0.979), but candidate
+aggregate prompt latency was 2.165x baseline; Qwen prompt latency was 1.240x
+and local USD cost remained zero. The rule required at least one observed
+provider cache gain, no cache regression, cost within 1.25x, and prompt latency
+within 2x. Therefore drop-oldest remains the default and the candidate stays
+available for future evaluation rather than being silently promoted.
+
+Machine-readable evidence is in
+`conformance/2026-08-10-truncation.json`. The report stores fingerprints,
+counts, usage, cost, timing, and structural issue codes, never model response
+content or provider error text.
+
+---
+
+## A0-M.1: a declaration is not a live capability, 2026-08-11
+
+The first model-control slice makes the distinction this project has already
+learned through failures executable: configured metadata says what a
+deployment is intended to provide; a dated live probe says what it was
+actually observed providing. They now occupy separate sections of a
+product-owned version-1 capability record and carry different provenance
+kinds, so provider metadata cannot be relabelled as verification.
+
+The record covers provider/model identity (including optional digest and
+quantization), API/transport, declared and served context, output-limit
+behavior, tool/image/thinking/structured-output/streaming support,
+usage/cache reporting, health, readiness, evidence source, and verification
+time. Unknown support remains a first-class value rather than being coerced
+to false or inferred from latency. This is particularly important for Qwen
+cache reporting: the existing zero fields remain `unknown`, not proof of no
+cache.
+
+`assessModelRoute()` is deliberately a fail-closed gate rather than an
+automatic selector. Missing observations are `missing`; expired observations
+are `stale`; future-dated evidence is rejected as stale clock/evidence state;
+unhealthy, unready, unsupported/unknown required capabilities, an unhonored
+output limit, or insufficient served context all produce explicit reason
+codes and `routable: false`. Tests include the negative control so a freshness
+check that quietly does nothing cannot pass.
+
+The existing `loadModel(configKey)` path remains unchanged. It is an explicit
+caller selection, not capability-based routing, and silently making every
+current config unroutable before capability artifacts exist would conflate
+the record contract with A0-M.2 deployment admission. Live runner inspection,
+memory/headroom policy, load state, concurrency limits, and controller wiring
+were subsequently implemented in A0-M.2 below.
+
+---
+
+## A0-M.2: admission needs runtime memory truth, not the nearest host metric, 2026-08-11
+
+The local control plane now serializes admission and model-load decisions,
+which prevents two concurrent cold requests from loading the same model
+twice. It inspects the runtime before and after loading, applies the A0-M.1
+capability/freshness gate, sizes at the configured maximum sequence count,
+reserves deployment headroom in addition to llama.cpp's measured 1 GiB
+reserve, and enforces resident-model and active-sequence limits. Capacity
+pressure is explicit: policy chooses a rejected result or a caller-owned
+queued result; the controller does not hide an unbounded queue.
+
+The first live attempt produced the important finding. `node:os.freemem`
+reported only 187,351,040 bytes free on this Mac while Ollama's Metal
+discovery, in the same minute, reported 5.3 GiB available. The former excludes
+reclaimable unified memory and is not the quantity llama.cpp uses for model
+admission. The gate correctly rejected the load, but a permanently false
+negative is still a broken control plane. The Ollama adapter therefore has no
+implicit memory authority: deployments must inject a current measurement and
+name its source. Missing authority becomes degraded rather than guessed.
+
+With the current 5.3 GiB Metal-available measurement injected, the live proof
+started from no resident model, described the pulled Qwen artifact through
+`/api/show` and `/api/tags`, and loaded it through `/api/generate` with
+`num_ctx: 8192`. The existing sizing formula predicted 3,777,642,091 bytes;
+`/api/ps` observed 3,777,935,441 bytes, a 293,350-byte difference (0.008%),
+with `size_vram == size` and the full 8,192 context served. One sequence was
+admitted and the controller lease was released. Evidence is content-safe at
+`conformance/2026-08-11-admission.json`.
+
+The controller exposes cold, loading, ready, busy, and degraded states.
+Malformed runtime data, context mismatch, duplicate identity, load failure,
+missing post-load evidence, stale capability evidence, and partial accelerator
+residency all fail closed. Process-local leases are intentionally not a
+distributed concurrency primitive; Phase C/B deployment ownership must place
+one authoritative controller per runtime or persist/coordinate leases before
+multi-process serving.
+
+---
+
+## A0-M.3: a baseline can pass while a deployment profile fails, 2026-08-11
+
+`scripts/verify-performance.ts` now runs one excluded warm-up followed by 30
+measured warm tool round trips for one configured deployment profile. The
+fixed workload makes a required weather-tool call and a tool-disabled final
+answer, requests at most 512 tokens per provider call, and records when the
+deployment does not honor that request. Every sample retains queue, first
+event, prompt phase, generation phase, provider, tool-dispatch, and complete
+round-trip timing; usage-derived prompt/generation throughput; retries; and
+structural conformance. Model load is a separate pre-warm measurement.
+
+The Qwen/Ollama profile passed all 30 samples at served context 8,192. Full
+tool round trip was 52.113 s p50 and 83.279 s p95; first event was 1.988 s
+p50 and 16.134 s p95; prompt throughput was 77.120 tokens/s p50 and 141.481
+p95; generation throughput was 12.074 tokens/s p50 and 15.321 p95. Provider
+time was 51.771 s p50 and 82.478 s p95. The fresh admission/preload observation
+measured model load separately at 19.155 s. Sequential queue time was near
+zero; this says nothing about contended queue behavior. Two provider retries
+occurred across the 30 samples.
+
+Model load has its own 30-sample distribution rather than borrowing the one
+fresh-service observation. Every sample first unloaded Qwen and verified it
+absent from `/api/ps`, then timed `/api/generate` preload and rechecked context
+and accelerator residency. With the Ollama process and OS file cache warm,
+30/30 loads passed at 1.932 s p50 and 3.007 s p95. The excluded first load
+after service start was 15.687 s. These are deliberately different profiles:
+warm-process cold model load is not a machine/service cold start.
+
+The finalized Codex profile failed closed at 27/30 conformant, with 40 total
+retries. Its conformant population measured 11.687 s p50 and 26.200 s p95
+full tool round trip; 4.681/5.606 s first event; 21.019/23.529 tokens/s prompt
+throughput; and 11.687/26.200 s provider time. The three failures remain in
+the artifact and in the 90% conformance rate but do not inject zero values
+into performance percentiles. Hosted model load is explicitly not applicable,
+and Codex's declared unbounded output behavior is recorded as
+`maxTokensHonored: false`.
+
+Generation throughput is an end-to-end stream-event estimate, not a provider
+kernel metric. Codex sometimes delivered the terminal output only a few
+milliseconds after the first visible output event, producing implausibly high
+derived rates (701.684 tokens/s p95 and 7,724 max). Those values describe the
+observable event boundary and must not become a generation SLO. A provider-
+internal throughput claim requires provider timing telemetry instead.
+
+The first Codex attempt is preserved at
+`conformance/2026-08-11-performance-codex.json`; it used the earlier synthetic
+prompt and also failed (24/30). Its raw samples were not changed when an
+aggregation defect was found: only the summary was recomputed so failed
+zero-valued samples no longer contaminated percentiles. The finalized common
+workload is in `conformance/2026-08-11-performance-codex-final.json`; Qwen is
+in `conformance/2026-08-11-performance-qwen.json`, with its separate load
+distribution in `conformance/2026-08-11-model-load-qwen.json`.
+
+This completes the measurement process, not an SLO decision. All final artifacts
+have `thresholds: null` and `thresholdStatus: not-established`. Thirty warm
+samples are enough to expose the distributions and current conformance risk;
+they are not authorization to invent production targets without an actual
+workload, contention profile, and service objective.
+
+---
+
+## A1.1: provider attempt terminals are not run terminals, 2026-08-11
+
+`step()` now uses `Models.stream()` as its only model path and returns the
+completed message from that same stream's `.result()`. Its optional `onEvent`
+sink receives pi-ai's raw `AssistantMessageEvent` sequence in order and is
+awaited before successful output can enter conversation history. A failed sink
+therefore fails closed rather than acknowledging an output whose event record
+was not accepted. Each sink delivery is an owned snapshot: the terminal event
+and `.result()` share the provider's message object, so forwarding that object
+directly would let a sink mutate the response before validation and append.
+Successful completed messages also cross an explicit runtime shape check
+before append; provider `error` and `aborted` messages are terminal
+operational state and are never appended as assistant content.
+
+The existing bounded retry policy creates an important protocol distinction.
+A transient attempt can emit `start` then `error`, after which a recovered
+attempt emits another `start` then `done`. Those are truthful provider-attempt
+events, but they cannot each become a canonical run terminal: the A0 run
+contract permits exactly one terminal event. A1.2 must preserve attempt
+visibility while mapping only the final logical outcome to `run.completed`,
+`run.failed`, or `run.cancelled`. A deterministic regression fixes this
+boundary by requiring `start, error, start, done` while appending only the
+recovered final message.
+
+---
+
+## A1.2: the journal boundary is part of control flow, 2026-08-12
+
+`run()` now wraps the streaming `step()` with required positive `maxTurns`, a
+finite absolute deadline, stable conversation/causation identity, aggregate
+usage and provider latency, and an acknowledged canonical `RunEvent` sink.
+Raw retry attempts contribute only ephemeral text/thinking deltas. A validated
+successful runtime message becomes one versioned `message.completed`; tool
+requests, actual starts, and actual completions cross the same acknowledgement
+boundary; only the final logical result becomes `run.completed`, `run.failed`,
+or `run.cancelled`. Each `turn.completed` carries both provider usage and the
+current anchored/estimated context budget. A direct integration test publishes the generated sequence
+through `RunEventTransport` and revalidates it as a complete run.
+
+Approval suspension exposed a mismatch between two already-decided contracts.
+The A1 ADR required `reason: needsApproval`, while A0's `run.completed` payload
+validator allowed only `stop|maxTurns`. Since these remediation changes are
+still one uncommitted pre-release stack, version 1 was corrected to include
+`needsApproval` and a runtime validation test locks it. A tool request with no
+execution gateway now ends with that reason and returns an owned snapshot of
+the pending calls; it is not mislabeled as provider failure.
+
+Required-sink failure is the exceptional terminal case. If the acknowledgement
+boundary rejects, including by rejecting with `undefined`, the runtime aborts
+active work and returns `persistenceUnavailable`. It cannot truthfully emit a
+terminal event to the same failed sink, so it emits nothing further rather
+than fabricating durability. Every publishable run still has exactly one
+terminal event. A rejection at `message.completed` is tested to leave the
+assistant turn out of in-memory history.
+
+Cancellation now reaches both halves of a turn. The combined caller/deadline
+signal is forwarded into the active provider stream and into an optional tool
+execution context. Dispatch races each handler against the signal, which
+bounds the runtime even if a handler ignores cancellation; only a cooperative
+handler can guarantee its underlying external operation stops. Lifecycle sink
+failure also aborts the shared signal so parallel tool work cannot keep the run
+wedged. Per-tool timeout, output, concurrency, and confinement enforcement
+remain A2.2 work; capability decisions are now implemented in A2.1 below.
+
+---
+
+## A2.1: decide the complete batch before executing any sibling, 2026-08-12
+
+A capability decision cannot safely be bolted onto each parallel handler at
+the moment it starts. If one model turn requests an allowed read and an
+approval-required write, independently dispatching both lets the read cross
+the side-effect boundary before the runtime knows the batch must suspend.
+`dispatchToolCalls()` now has a two-phase boundary: find and schema-normalize
+every registered call, evaluate and acknowledge every capability decision in
+request order, then start handlers only when no call requires approval. A
+mixed allow/approval regression proves that neither sibling executes.
+
+Every tool registration now carries a validated, snapshotted control
+declaration: one or more stable capabilities, risk, timeout, output limit,
+concurrency cost, side-effect class, and idempotency strategy. The last three
+execution limits are declarations in A2.1, not claimed enforcement; A2.2 is
+still responsible for per-tool timers, output truncation/rejection,
+concurrency accounting, workspace confinement, and protocol-specific shell
+and HTTP controls.
+
+The policy itself is data rather than an authorization callback that receives
+arbitrary runtime state. Its input shape contains deployment, authenticated
+role, workspace, the registered tool controls, and schema-normalized JSON
+arguments. Unknown fields are rejected, leaving conversation text, model
+output, and tool results no field through which to grant permission. Missing
+policy/context, no matching rule, and equally specific conflicting rules deny
+with stable codes. Multi-capability tools combine conservatively: any deny
+wins, then approval, and only an all-allow decision executes.
+
+The canonical sequence is now `tool.requested` → `tool.decision` → optionally
+`tool.started` → optionally `tool.completed`. A denial never starts the
+handler and becomes an error result the model can react to. Approval emits no
+fabricated completion and ends the bounded run as `needsApproval`, with the
+pending call preserved and no tool result appended. The decision event carries
+both the governing capability and the sorted complete capability declaration,
+so audit projection does not have to infer authorization from a tool name or
+redacted detail.
+
+---
+
+## A2.2: a timeout must not release capacity while work still runs, 2026-08-12
+
+The dispatcher now enforces the controls A2.1 only declared. Each allowed call
+gets the earlier of its registered timeout and the enclosing run deadline, an
+owned abort signal, a pre-exposure output-size gate, and a lease from one
+shared global/per-capability capacity controller. Capacity pressure rejects
+explicitly rather than entering a hidden unbounded queue.
+
+The sharp concurrency case is an uncooperative timeout. Returning an error and
+immediately releasing the lease would make the counter say the slot is free
+while the original handler can still be writing or issuing network requests.
+The runtime response is therefore bounded by the timer, but the lease is held
+until the handler promise actually settles. Only handler cooperation can stop
+the underlying side effect; the accounting does not pretend otherwise.
+
+Caller-key idempotency is supplied by trusted application state indexed by the
+tool-call id, never by model arguments. Repeated or concurrent calls within the
+same deployment/workspace/tool/key scope share a snapshotted result, while a
+side-effecting declaration that requires a caller key fails before start when
+none is present. Natural idempotency remains handler-owned.
+
+Filesystem, shell, and HTTP enforcement are reusable primitives for A2.3, not
+enabled tools. Workspace checks use `realpath` on the canonical root and target
+(or the canonical parent for creation), closing both lexical traversal and
+symlink escape. Shell validation allows only explicit executables, a confined
+cwd, bounded argument vectors, and allowlisted environment values without
+ambient inheritance. HTTP checks every initial and redirected destination,
+blocks private addresses by default, pins the validated DNS address into the
+actual socket connection, rejects URL credentials, and limits both declared
+and streamed response bytes. The DNS pin matters: validating one lookup and
+then letting the HTTP client perform a second lookup would leave a rebinding
+window while appearing SSRF-safe.
+
+Operational redaction remains schema-owned in `event-projections.ts`: tool
+arguments and results become sizes only, while audit receives a hash and size.
+A2.2 does not add a second best-effort logging filter. Deterministic negative
+tests cover timeout, capacity, oversized output, missing/replayed idempotency
+keys, symlink escape, shell policy, redirect-to-private DNS, and streamed size.
+
+---
+
+## A2.3: a built-in tool is a factory, not ambient authority, 2026-08-12
+
+The first tool suite is implemented without registering anything globally.
+Deployments construct the file, search, write, process, and HTTP handlers they
+intend to expose and then register them through the same A2.1 capability policy
+and A2.2 execution controller as every external tool. A fresh `ToolRegistry`
+still contains zero capabilities.
+
+File read and listing require canonical existing workspace paths. Literal text
+search recursively skips symlinks and bounds file count, per-file bytes,
+matches, and returned line width. File replacement writes a private staged
+file in the canonical target directory and renames it atomically; it requires
+a trusted caller idempotency key and can require the current content SHA-256,
+so a stale writer fails as `fs.write-conflict` rather than overwriting a newer
+value silently.
+
+The process tool does not accept a shell command. It passes an allowlisted
+executable and string argument vector to `spawn` with `shell: false`, a
+realpath-confined cwd, no ambient environment inheritance, cooperative kill,
+and a streaming stdout/stderr bound. A regression passes shell metacharacters
+as one argument and proves no file is created. The HTTP tool is GET-only and
+reuses A2.2's scheme, destination, redirect, DNS pin, and streamed response
+limits.
+
+Prompt-injection strings returned by file and HTTP fixtures remain visible to
+the model as untrusted tool-result data. They have no route into policy input,
+which remains deployment, authenticated role, workspace, registered controls,
+and schema-normalized arguments only. This is a boundary test, not a claim
+that model-facing delimiters can make hostile content harmless.
+
+---
+
+## A3: approval is a bound authorization record, not another model turn, 2026-08-12
+
+Policy suspension now produces a versioned request containing the stable run
+and conversation identities, normalized tool call, canonical argument hash,
+governing and complete capability set, reason code, and finite expiry. The
+request is acknowledged as `approval.requested` before the run terminates as
+`needsApproval`; it is returned as an owned persistence-ready value rather
+than kept in an in-memory promise.
+
+Resume accepts a deliberately narrow structured submission: approval id,
+approved/denied decision, and opaque authorization proof. An injected authority
+verifies that proof and supplies the authenticated actor identity. Unknown
+fields—including conversation-shaped text—are rejected. The submitted run and
+conversation must match the request; the stored argument hash is recomputed;
+expiry is checked; and `approval.resolved` acknowledgement happens before any
+handler start. A journal failure therefore leaves both execution and model
+history untouched.
+
+Approval does not create a privileged dispatch twin. Approved calls re-enter
+the current registry's schema validator and full capability declaration, with
+a narrow exact-argument allow rule only for the capabilities recorded in the
+approval. If registration changes to require another capability while a user
+is deciding, that capability is unmatched and denies. A trusted approval-id
+idempotency key crosses the existing A2.2 side-effect boundary. Duplicate
+identical resume returns owned prior results without a second execution or
+append, while a conflicting second decision fails explicitly.
+
+The implementation is process-local because no Phase B repository exists yet.
+That is an explicit durability limit rather than an implied durable claim; the
+request/resolution contracts and acknowledgement callbacks are the boundary a
+later repository must implement.
+
+---
+
+## A4: MCP is an adapter into the gateway, not a second tool runtime, 2026-08-12
+
+The official MCP SDK is confined to a narrow client port under `src/mcp/`.
+Discovery does not automatically grant authority: the server identity is
+pinned, pagination is bounded, extra tools are ignored, and every configured
+tool must match a deployment-owned fingerprint over its remote name,
+description, input schema, and output schema. Only deployment-owned local
+names and descriptions enter the model prompt. Remote server instructions are
+never consumed by the harness.
+
+Registration is a two-phase publication boundary. Every candidate handler is
+validated in an isolated registry and all live-name conflicts are checked
+before any handler becomes visible. This matters because a simple loop that
+registers while validating can fail on a later schema or control declaration
+after already activating an earlier remote tool.
+
+An admitted MCP call is an ordinary registered handler. Schema validation,
+capability policy, approval suspension/resume, timeouts, concurrency,
+idempotency, lifecycle acknowledgement, and output-size rejection remain
+owned by the existing A2/A3 path. MCP text and images map to the provider
+boundary; other valid content blocks are preserved as explicitly tagged
+untrusted JSON instead of being silently dropped or promoted into control
+input.
+
+The official SDK wrapper applies finite connect/discovery/call deadlines and
+reports ready/degraded/closed health. Its stdio transport can launch only a
+deployment-allowlisted executable with bounded arguments, a realpath-confined
+working directory, a finite protocol buffer, and an explicit environment.
+Both an in-memory malicious SDK server and a real stdio child prove the path;
+tests also cover identity and input/output-schema drift, cursor cycles,
+duplicates, disconnects, oversized results, and atomic failure.
+
+---
+
+## B0: deployment defaults are schema inputs, 2026-08-12
+
+B1 previously said migrations, local embeddings, attachment abstraction, and
+single tenancy were decisions while still leaving their concrete versions and
+defaults open. That is enough for design prose but not enough to create the
+first migration: database major, vector dimension, encryption boundary, and
+tenant model all become expensive data-shape commitments.
+
+`phaseB/adrs/B0-persistence-prerequisites.md` now freezes PostgreSQL 18.x with
+pgvector 0.8.6, dbmate v2.35.0 plain SQL, local encrypted disk as the default
+attachment store, deployment-owned key management, a 15-minute RPO and 4-hour
+RTO with quarterly restore proof, and one legal/security tenant per database.
+The multi-tenant trigger is objective: stop before two independent legal,
+residency, or mutually untrusted administrative domains share a database or
+control plane.
+
+The embedding contract is Ollama v0.32.5 with
+`nomic-embed-text:v1.5`, 768 dimensions, and distinct document/query prefixes.
+The published tag and identifier are not substituted for local proof: the
+Ollama server was unavailable during B0, so B5 must capture the full local
+manifest digest and deterministic output probe before creating production
+vectors. A model change creates a new embedding generation and rebuild rather
+than mixing incompatible vectors.
+
+---
+
+## B1: the first durable schema must preserve product identities, 2026-08-19
+
+The A0 contracts intentionally model event, run, conversation, and message
+identities as stable non-empty strings. Production defaults create UUIDs, but
+the runtime also exposes deterministic factories for replay and verification.
+Narrowing the database columns to `uuid` would make a valid product event
+unpersistable and couple storage to one factory implementation, so the B1
+schema stores opaque checked text identifiers while production continues to
+emit UUIDs by default.
+
+The initial migration now covers users, conversations, runs/turns, messages,
+tool calls/decisions, approvals, attachments, event journal, metadata-only
+audit events, outbox/checkpoints, and erasure jobs/targets. Message envelopes
+are validated before SQL, denormalized query columns are extracted from the
+validated envelope, `(conversation_id, seq)` is unique, and database triggers
+reject in-place updates plus invalid or branching supersession. One SQL CTE
+writes the canonical journal row and schema-derived audit projection together;
+streaming deltas remain ephemeral.
+
+**[VERIFIED]** dbmate 2.35.0 applied the migration to a fresh PostgreSQL 18.6
+database with pgvector 0.8.6, then the TypeScript repositories passed their
+live integration test. The complete suite passed 387/387 with that integration
+database enabled, and typecheck passed.
+
+The live CLI check also disproved one B0 assumption: dbmate 2.35.0 has no
+`--strict` option and reports `flag provided but not defined: -strict`.
+Applied-migration immutability is now enforced by a checked-in SHA-256 manifest
+and the test suite instead of attributing that behavior to dbmate.
+
+---
+
+## B2: complete history is no longer the provider window, 2026-08-21
+
+`ConversationManager.append()` no longer deletes old messages to fit the
+model context. It owns a complete loaded transcript, still caps tool-result
+content before storage in memory, and computes the provider-facing context as
+a projection for `getContext()`/`compileContext()`. Callers that need to
+inspect the outbound slice can use `getProviderHistory()`; callers that need
+the transcript keep using `getHistory()`.
+
+The 1.8 usage anchor survives only when its measured prefix is actually
+available. A full current-history load through `MessageRepository` rebuilds
+the latest usable assistant usage anchor from stored product envelopes. A
+partial load falls back to `estimated`, because an anchor whose prefix was not
+loaded would price a conversation the manager cannot see. If an anchored
+projection cuts away the measured prefix, the kept slice is re-checked against
+the unanchored message budget before delivery.
+
+The product envelope now has a reverse mapper back to the current runtime
+message union for reload. That is deliberately a codec boundary, not a
+database type leak: historical JSON remains validated as the product contract,
+then mapped into the runtime shape needed for provider calls.
+
+**[VERIFIED]** deterministic tests cover long-history reload, partial-load
+anchor provenance, current-message/supersession semantics, anchor tightening
+and loosening, provider budget invariants, product-envelope reverse mapping,
+bounded repository paging, and tool-call/result integrity. `npm test`
+discovered 393 tests: 392 passed and the live storage integration skipped
+without `STORAGE_TEST_DATABASE_URL`. The integration then passed separately
+against PostgreSQL 18.6 + pgvector 0.8.6 after dbmate 2.35.0 applied the
+checked-in migration; it proved the real `current_messages` view excludes the
+superseded row during `ConversationManager` reload. `npm run typecheck` and
+`git diff --check` passed. The disposable database container was removed.
+
+The final full-suite run also exposed a same-deadline timer race outside the
+history path: under scheduler load, a tool timeout could settle just before
+the run deadline callback and permit another turn. `run()` now re-checks the
+absolute wall-clock deadline immediately after each step. The isolated test
+and two consecutive full-suite runs passed after that boundary was tightened.
+
+---
+
+## B3: persistence acknowledgement needs a second durable path, 2026-08-21
+
+The required event sink already made journal acceptance part of the runtime
+acknowledgement boundary. A repository call alone did not define what happens
+after an uncertain commit or during a database outage. B3 now gives that
+boundary two explicit outcomes: the journal, audit projection, and outbox job
+commit together, or the canonical event is synced to a bounded encrypted
+spool. If neither path accepts the event, publication fails and the run uses
+the existing `persistenceUnavailable` result.
+
+The durable outbox job contains only the event ID and journal sequence. It
+does not copy message or tool content. The spool uses AES-256-GCM with a
+deployment-owned 32-byte key, authenticated envelope metadata, directory mode
+0700, file mode 0600, atomic rename, file and directory sync, and explicit
+entry and byte limits. A database integrity error is not an outage and cannot
+enter the spool.
+
+Replay is at least once. If the database committed before the connection was
+lost, the same event can also exist in the spool. The journal event ID makes
+the replay a no-op. The spool entry is then removed. A consumer gets the event
+ID as its delivery ID and advances a monotonic journal checkpoint only after
+its handler succeeds. A process loss after the side effect and before the
+checkpoint repeats delivery. The consumer must make its side effect
+idempotent by delivery ID.
+
+**[VERIFIED]** deterministic tests inject database outage, ambiguous commit,
+commit before spool deletion, spool exhaustion, integrity failure, duplicate
+replay, and failure between consumer handling and checkpoint commit. Pinned
+dbmate 2.35.0 then applied the migration to a disposable PostgreSQL 18.6
+database with pgvector 0.8.6. The live integration proves the journal, audit,
+and outbox rows commit together and duplicate replay creates no second row.
+
+The process-kill integration terminates the PostgreSQL backend while the
+outbox trigger is active and proves that the complete statement rolls back.
+It also kills worker processes after the journal commit but before event
+acknowledgement, after replay commit but before spool deletion, after a
+consumer side effect, and before checkpoint commit. Each restart produced one
+durable side effect and a monotonic checkpoint. The complete live suite passed
+404/404. `npx tsc --noEmit` and `git diff --check` passed.
+
+---
+
+## B4: object identity and attachment authority are different, 2026-08-21
+
+An attachment needs a stable content identity, but authorization and deletion
+belong to the attachment record. Reusing one physical object key across
+conversations would require reference locking and reconciliation before any
+record could delete it. B4 therefore uses IDs and immutable object keys that
+carry the SHA-256 digest plus a record-specific suffix. This preserves
+content addressing and integrity without making one conversation depend on
+another conversation's object reference.
+
+Uploads enter a private 0700 quarantine directory and a 0600 file first. The
+stream is bounded while it is written, then MIME content is checked before an
+object store or parser can receive it. Every later validation step is inside
+the cleanup scope. Local publication is an atomic no-clobber hard link on the
+same filesystem. The S3-compatible port requires an immutable-create
+precondition and SHA-256 checksum metadata. Both backends verify byte count
+and digest on read.
+
+The service resolves attachment metadata, checks conversation access, rejects
+non-available states, and only then calls the object backend. Processing is an
+adapter boundary rather than a handwritten archive/document/image parser:
+adapters declare a maintained library/version, while the harness validates
+relative output paths, entry counts, output counts and bytes, and expansion
+ratio. Unsupported formats remain rejected by default.
+
+Deletion changes `available` to `tombstoned` and inserts the metadata-only
+`attachment.delete.requested` outbox job in the same PostgreSQL statement.
+Reads reject the tombstoned row immediately. The worker can delete the object
+more than once and marks the row `deleted` only after object deletion succeeds.
+
+**[VERIFIED]** adversarial tests cover streaming overflow, MIME mismatch,
+invalid content IDs, cleanup after post-stage failure, message/conversation
+binding, denied reads, digest tampering, traversal, symlink substitution, S3
+checksum/precondition fields, unsafe processor output, and deletion replay.
+Pinned dbmate 2.35.0 applied the schema to PostgreSQL 18.6 with pgvector
+0.8.6. The complete live suite passed
+414/414; typecheck and diff checks passed. The disposable database container
+was removed.
+
+---
+
+## B5: local search proves its embedding boundary before indexing, 2026-08-21
+
+B5 has deterministic code for local-only search and a live target-machine
+embedding manifest. The embedding manifest parser accepts only local
+providers (`ollama`, `local-process`, `local-file`), requires a full
+`sha256:` model digest, validates dimensions and finite vectors, and rejects
+hosted HTTP/S embedding endpoints. That closes the air-gapped negative path
+in code instead of relying on operator discipline.
+
+The storage model separates source identity from searchable chunks:
+`embedding_models` pins the model manifest, `knowledge_sources` links chunks
+back to message, attachment, or document sources, `knowledge_chunks` stores
+content hash, citation ID, ordinal, tombstone marker, generated lexical
+vector, and JSON access policy, and `chunk_embeddings` stores the pgvector
+embedding keyed by chunk and manifest digest. The database uses pgvector
+0.8.6 with a 768-dimension HNSW cosine index and separate GIN indexes for
+lexical and access-policy lookups.
+
+Retrieval is deliberately filtered before model exposure. The repository's
+search SQL joins chunk embeddings to chunks and sources, excludes tombstoned
+chunks, checks public/user/group access in the `WHERE` clause, then orders
+the already-authorized candidate set by a vector/lexical score and returns
+bounded chunks with citations and source identifiers.
+
+**[VERIFIED]** deterministic tests cover full local digest enforcement,
+hosted-endpoint rejection, vector dimension and `NaN` rejection, retrieval
+quality metrics (`hit@k`, MRR), source-linked chunk writes, parameterized
+content handling, access-filtered search SQL, migration declarations, vector
+index presence, and the migration checksum. `npm run typecheck` passed.
+`npm test` discovered 422 tests: 420 passed and 2 live storage tests skipped
+without `STORAGE_TEST_DATABASE_URL`.
+
+**[VERIFIED]** `npm run verify:embeddings -- --output
+conformance/2026-08-21-embedding-nomic-local.json` pulled/verified local
+Ollama 0.32.5 with `nomic-embed-text:v1.5`, digest
+`sha256:0a109f422b47e3a30ba2b10eca18548e944e8a23073ee3f3e947efcf3c45e59f`,
+embedding capability, F16 quantization, 768 dimensions, and a real
+`search_query:` probe that returned a 768-dimensional vector. The report
+stores a vector hash rather than the full vector.
+
+**[VERIFIED]** pinned dbmate 2.35.0 applied the checked-in migration to a
+fresh disposable PostgreSQL 18.6 + pgvector 0.8.6 container. The live B1-B5
+storage integration passed with embedding manifest registration,
+source/chunk/vector insertion, unauthorized search exclusion, authorized
+citation return, and the prior history/journal/attachment checks. The B3
+process-kill integration passed separately on the clean migrated database;
+when it was first run concurrently after another storage test, it failed by
+reading a prior journal row, which is test isolation debt rather than a B5
+schema failure.
+
+---
+
+## B6: a tombstone must defeat a transaction that started before it, 2026-08-21
+
+B6 first made the application repositories filter a subject tombstone before
+writing and the public message, journal, attachment, and search paths filter it
+before reading. That closes ordinary post-request writes, but it does not close
+the transaction that inserted content before the erasure request and had not
+yet committed. The erasure statement cannot see that uncommitted row, so a
+scope snapshot alone could have completed and allowed the old transaction to
+land hidden-but-still-stored content afterward.
+
+The follow-on migration therefore adds deferred commit-time guards to messages,
+attachments, journal events, knowledge sources, and chunks. A write that began
+before the tombstone is rechecked at commit and rejected with SQLSTATE 55000.
+The live negative control held a message insert open, committed the erasure
+tombstone in another connection, and proved the late commit failed and left no
+row.
+
+The erasure itself is a convergent seven-store workflow: attachments,
+embeddings, search, cache, temporary derivatives, provider payloads, and
+PostgreSQL. The coordinator refuses to start unless exactly one adapter exists
+for every store, deletes in dependency order with PostgreSQL last, verifies
+absence after each deletion, then repeats every retrieval check during
+reconciliation. Arbitrary downstream exception text is reduced to a bounded
+machine code so an error path cannot copy erased content into job metadata.
+
+Stable scope tables preserve logical message revision chains and affected
+identifiers while deletion proceeds. Attachment object keys are retained only
+until object-store reconciliation completes and are removed atomically with job
+completion; metadata-only audit rows remain after their content-bearing journal
+event is deleted. Cache, temporary-derivative, and provider-payload stores do
+not exist in this repository, so their exact-adapter/failure behavior is
+deterministically verified rather than claimed as a live backend proof.
+
+**[VERIFIED]** pinned dbmate 2.35.0 applied both immutable migrations to a
+fresh PostgreSQL 18.6 + pgvector 0.8.6 database. Four live storage integrations
+passed: the B1-B5 baseline, conversation erasure with vector/object/journal
+negative proof, logical-message revision erasure preserving sibling history,
+and user erasure scrubbing the profile plus all owned conversations. The B3
+process-kill regression passed separately on a clean database. Logical vector
+rows and public HNSW-backed retrieval are absent after erasure; physical dead
+page reclamation and backup expiry remain B7 operational-policy work.
+
+---
+
+## B7: recovery evidence is part of residency, 2026-08-21
+
+A residency list alone cannot prove that a restore keeps the same product
+semantics. B7 therefore makes the inventory executable: all nine locations
+(database, objects, embeddings, indexes, logs, caches, temp files, backups,
+and telemetry) are represented in a versioned JSON document, and validation
+fails if any is missing or duplicated. Logs and optional telemetry are
+metadata-only and external telemetry is disabled by default.
+
+The physical-erasure boundary is now explicit. Active retrieval denial and
+logical row/vector deletion are immediate. Autovacuum, post-erasure `VACUUM
+(ANALYZE)`, and threshold-triggered vector reindex reclaim reusable space but
+are not described as forensic overwrite. Encrypted immutable backups have a
+35-day maximum retention baseline. A restore remains isolated until current
+erasure records are reapplied and B6 retrieval reconciliation passes; an
+emergency forensic-erasure requirement belongs to the deployment-owned key or
+volume boundary.
+
+The journal now has an idempotent run-history projector. It uses the durable
+journal sequence for completed-message ordering and materializes only a
+validated `message.completed`; deltas never enter the projector. Terminal
+cancel/failure events persist bounded machine metadata without copying provider
+error detail into the run row.
+
+**[VERIFIED]** `npm run verify:residency` used two explicitly prefixed
+disposable databases on PostgreSQL 18.6 with pgvector 0.8.6. A real
+custom-format backup/restore preserved message order, table schema versions,
+envelope schema versions, and the applied migration set. Pinned dbmate 2.35.0
+then rolled the latest migration down and forward, after which the restored
+history was unchanged. The same verifier passed the metadata-only log canary,
+encrypted database-outage spool/replay, search-after-erasure, exact-origin
+air-gap denial, and interrupted-stream terminal/no-assistant-message drills.
+The content-free report and backup archive digest are recorded in
+`conformance/2026-08-21-residency-recovery.json`.
+
+**[VERIFIED]** The final database-free suite discovered 443 tests: 437 passed
+and six isolated database/process tests skipped. `npm run typecheck` and `git
+diff --check` passed. The live B7 verifier ran the skipped storage and
+interrupted-stream gates separately; B3's literal process-kill proof remains
+the earlier clean-database evidence and was not recharacterized as a B7 run.
+
+---
+
+## P3.1: deployment topology is a security contract, 2026-08-24
+
+The first supported topology is now frozen in
+`phase3/adrs/P3.1-single-node-deployment.md`: one client-owned Docker host,
+PostgreSQL 18/pgvector 0.8.6, Ollama 0.32.5 with the already-evidenced Qwen
+digest and 8,192 context, four persistent volumes, and one internal Compose
+data plane with no host-published ports. There is no placeholder application
+server; the stack is honestly a substrate until Phase C supplies authenticated
+HTTP/SSE ingress.
+
+## C1: authentication and SSE are one ingress boundary, not two paths, 2026-08-25
+
+**[VERIFIED — deterministic]** `src/server/` now supplies the first Phase C
+slice. Bearer sessions are strict, bounded, expiring/revocable records which
+store token digests rather than raw tokens. RBAC grants operations while
+parameterized PostgreSQL checks separately prove active-user conversation/run
+ownership; denied resources are indistinguishable from absent ones. Run
+commands reject unknown fields, unbounded content/turns, ungranted config keys,
+and unauthenticated callers before command ownership transfers.
+
+SSE reuses the canonical `RunEvent` encoder and durable event journal.
+`Last-Event-ID` is resolved inside the same run, stored identity/sequence drift
+fails closed, and a process-local broker carries only post-acknowledgement live
+events. It is deliberately not replay storage, and subscriber failure cannot
+reject an event whose durable acknowledgement already succeeded. Thirty-one
+focused server/repository tests pass. The full suite discovers 462 tests (456 pass and
+six isolated database/process integrations skip without a disposable
+database); typecheck and the eight-check deployment topology verifier pass.
+
+**[UNVERIFIED / deferred]** C1 does not yet claim a deployable chat product.
+The C2 command gateway must append the authenticated user message, load complete
+history, invoke the existing bounded runtime/policy path, compose durable
+journal/spool acknowledgement before fan-out, and then join Compose as the sole
+published ingress. The P3 operational artifact remains development-host
+evidence; target client-owned Linux certification is still a release gate.
+
+**[VERIFIED — deterministic]** Registry inspection resolved immutable
+multi-architecture digests for Node, pgvector, Ollama, and dbmate. Compose's
+fully rendered all-profile JSON passes a fail-closed policy covering exact
+services/volumes, the internal data network, absence of host ports,
+least-privilege file secrets, health/migration dependency conditions, and the
+one explicit egress-capable model-bootstrap job. Five focused tests pass,
+including a negative control that mutates the manifest to add a database port,
+move inference onto egress, use `latest`, and inject a password-like
+environment variable; every mutation is rejected.
+
+The runtime readiness job is intentionally stronger than container health. It
+requires PostgreSQL major 18, pgvector exactly 0.8.6, both applied migration
+versions, Ollama exactly 0.32.5, the full pinned model digest, a real load at
+8,192 context, a writable attachment canary, and an authenticated event-spool
+open with a 256-bit key. It emits metadata only.
+
+**[VERIFIED — implementation boundary]** Secrets are newline-terminated
+regular files mounted per service. Direct password/key environment variables
+fail configuration. dbmate and `pg_dump` create a mode-`0600` temporary
+`.pgpass`, keeping the password out of process arguments, URLs, Compose
+environment, reports, and images. The model-bootstrap profile is the only
+egress path; steady Ollama has cloud functions disabled and is attached only
+to the internal network.
+
+**[VERIFIED — live development environment]** The complete connected path ran
+on Docker Desktop 4.77.0, Linux ARM64 engine 29.5.3, Compose 5.1.4. All three
+local images built; Qwen bootstrap resolved to the pinned digest; a fresh
+PostgreSQL volume applied both migrations; readiness observed pgvector 0.8.6,
+Ollama 0.32.5, and the model loaded at 8,192 context; the attachment/spool
+checks passed; and a real mode-`0600` custom-format backup plus SHA-256 was
+created. After database/inference restart, migrations reported two applied and
+zero pending, volume initialization remained non-destructive, and readiness
+passed again. Network inspection found only database/inference on the internal
+data plane, no published ports, and no steady container on bootstrap egress.
+
+The live run caught two operational defects that static validation could not.
+The first 120-second model-load deadline cancelled Docker Desktop's CPU-only
+repack/warmup even though Ollama had allocated the correct 8,192-token context;
+the finite deployment deadline is now ten minutes and the unchanged
+digest/context gate passed. The backup job initially ran as the host UID on a
+root-owned mode-`0700` tmpfs and could not create `.pgpass`; matching tmpfs
+UID/GID fixed it, after which the backup passed. Evidence is in
+`conformance/2026-08-24-single-node-deployment.json`. This is development
+evidence, not a substitute for repeating the gate on the target client-owned
+Linux host before production.
+
+**[VERIFIED — final candidate]** The production dependency audit initially
+found one moderate advisory in the MCP SDK's transitive Hono 4.12.33. The
+compatible lockfile resolution now selects Hono 4.13.3; `npm audit --omit=dev`
+reports zero vulnerabilities. The runtime image was rebuilt from that final
+lockfile, then migrations, volume initialization, and full runtime readiness
+passed again. The final database-free regression discovered 448 tests: 442
+passed and six isolated database/process integrations skipped; typecheck,
+deployment policy verification, and `git diff --check` passed.
+
+---
+
+## C2: command acceptance is a database ownership transfer, 2026-08-25
+
+**[VERIFIED — deterministic and live PostgreSQL]** C2 requires a caller-owned
+idempotency key and binds it to a canonical authenticated command hash. One
+parameterized PostgreSQL statement locks the conversation, then atomically
+creates command ownership, the user message, and the pre-owned run. Identical
+retries return the first run without executing inference twice; different
+content under the same user/key fails with a stable 409 conflict. HTTP 202 is
+therefore an acknowledgement of durable ownership, not merely an in-memory
+background task.
+
+Adding direct user messages exposed a sequencing assumption in the B7
+projector: a global journal sequence cannot remain the conversation message
+sequence once messages also enter outside the journal. Both direct writes and
+projected completed messages now allocate under the locked conversation row.
+The projector separately binds the canonical `run.started` time to a pre-owned
+run and backfills legacy run starts during migration, preserving idempotent
+replay after upgrade.
+
+The concrete gateway reloads complete current history, obtains a current local
+model admission lease, passes the authenticated deployment/role/conversation
+policy context into bounded `run()`, and composes journal/spool acknowledgement,
+idempotent projection, then C1 live broker publication in that order. Compose
+adds exactly one loopback server port with file secrets, read-only root, dropped
+capabilities, persistent attachment/spool mounts, and only the internal data
+plane. PostgreSQL and Ollama remain unpublished.
+
+The live gate used a fresh disposable PostgreSQL 18/pgvector 0.8.6 database and
+pinned dbmate 2.35.0. It caught an unused SQL placeholder whose type PostgreSQL
+could not infer after the sequencing change; removing that stale parameter made
+the same test pass. The final migration and integration then passed from a new
+database, and both disposable containers were removed. The full suite discovers
+474 tests (467 pass, seven environment-isolated live tests skip); the C2 live
+test passes separately. Typecheck, rendered Compose policy, final production
+image build, and the image-local production dependency audit pass with zero
+reported vulnerabilities.
+
+**[UNVERIFIED / release gates]** This development host does not certify the
+target Linux machine, approved TLS ingress, accelerator residency, or a full
+client-session inference run. C3 now owns durable session administration and
+approval APIs; C4 owns rate/spend controls and product reads.
+
+---
+
+## C3: authorization state must outlive both files and processes, 2026-08-25
+
+**[VERIFIED — deterministic and live PostgreSQL]** C3 makes PostgreSQL the
+live authority for token-digested bearer sessions, current roles, and current
+model grants. The C1 registry is retained only as a one-time empty-database
+bootstrap: later restarts cannot overwrite an administrator's changes or
+revive a revoked session. Issuance returns a bounded raw token exactly once in
+a no-store response, while SQL receives only its SHA-256 digest. Access changes
+take effect on the next request because authentication joins current grants
+rather than trusting stale session claims.
+
+Approvals are reconstructed from durable run/tool/policy rows and filtered by
+conversation ownership; members can act only on their own conversations and
+admins can act tenant-wide. Resolution accepts the complete exact batch, injects
+the authenticated session as the A3 authority proof, and uses
+`ApprovalResumeController`. One SQL boundary records all decisions with actor,
+session, and request fingerprint before an approved handler starts. Structured
+unknown fields—including conversational text—are rejected. Tool results are
+then appended to durable history, and an identical same-session retry does not
+execute again.
+
+The live gate applied all four immutable migrations with pinned dbmate 2.35.0
+to a fresh PostgreSQL 18/pgvector 0.8.6 database. It proved bootstrap
+non-reapplication, admin authentication, access replacement, one-time session
+issuance, current-grant member authentication, approval execution plus durable
+decision/result state, idempotent replay, and revocation. The first live run
+caught `grant` being used as a PostgreSQL alias; renaming the reserved token and
+rerunning from a clean database passed. The existing B1-B6 storage integration
+suite also passes on the C3 schema. A focused live B6 erasure proof additionally
+removes the user's C2 command, roles, and model grants, revokes their sessions,
+destroys the original token digest, and detaches the run from the erased
+command.
+The full database-free suite discovers 487 tests: 479 pass and eight isolated
+database/process integrations skip.
+
+**[VERIFIED — browser authority boundary]** The deployment remains bearer-only:
+cookies and every request carrying an `Origin` header fail closed, and no CORS
+credential header is emitted. This is an explicit absence of browser-cookie
+authority, not a claim that CSRF has been solved for a future cookie mode.
+
+**[UNVERIFIED / release gates]** Target Linux qualification, approved TLS
+termination, accelerator-resident inference, and a full client-session model
+run remain unverified. C4 owns per-user/model concurrency and rate controls,
+enforceable token/spend budgets, and bounded product read APIs.
+
+---
+
+## C4: a budget decision is a reservation before work, not a report after it, 2026-08-25
+
+**[VERIFIED — deterministic and live PostgreSQL]** C4 places one expiring,
+caller-idempotent reservation in PostgreSQL before C2 command ownership. Under
+transaction advisory locks for the user and provider/model scopes, fresh
+statements evaluate active concurrency, accepted-run rate, and rolling
+token/spend totals before inserting. An identical retry reuses the first
+reservation. A different request under the same caller key conflicts instead
+of being charged twice.
+
+Token capacity is reserved conservatively as `contextWindow * maxTurns`; spend
+uses a declared per-run maximum. The supported local Ollama route reserves zero
+provider spend. Completed assistant messages carry the product-owned required
+token and USD-cost usage envelope, so successful work settles to measured
+values. Incomplete reporting retains the conservative reservation. Expiry
+releases concurrency after a process death but does not erase its budget charge
+inside the accounting window.
+
+The route fails before creating a message or run unless it declares an enforced
+output limit and token/cost reporting. This is separate from model admission:
+memory and runtime readiness do not prove that a provider can enforce or report
+a financial/token bound.
+
+C4 also exposes bounded current messages, available attachment metadata, one
+run status, and administrator-only audit pages. Member reads reuse the existing
+PostgreSQL ownership boundary. Attachment output omits object keys and hashes;
+audit output joins only the already-redacted `audit_events` projection, never
+the canonical journal payload. Query schemas accept one exact cursor and a page
+limit no greater than 100.
+
+Pinned dbmate 2.35.0 applied all five migrations to a fresh disposable
+PostgreSQL 18/pgvector 0.8.6 database. The live C4 test proved atomic
+concurrency rejection, measured settlement, released capacity, bounded product
+reads, and absence of message content from audit output. The existing B1-B6 and
+C2-C3 integrations passed serially on the same clean schema. A first combined
+rerun caught a non-unique object-key test fixture; making the fixture identity
+unique fixed the test. Reusing the already-mutated database then demonstrated
+again why stateful storage integrations require a reset disposable database;
+the final proof ran once from a new clean container, and the container was
+removed afterward.
+
+The full database-free suite discovers 500 tests: 491 pass and nine isolated
+database/process integrations skip. Typecheck, rendered Compose topology, and
+`git diff --check` pass. `npm audit --omit=dev --offline` reports zero
+vulnerabilities from the local advisory cache; three live registry audit
+attempts returned an empty endpoint error, so a current network-backed audit is
+explicitly unverified rather than reported as a pass.
+
+**[UNVERIFIED / release gates]** The deterministic and disposable-database
+proof does not certify the target Linux host, approved TLS ingress,
+accelerator-resident inference, or a real authenticated local-Qwen run through
+the deployed C4 server. Those remain separate release gates.

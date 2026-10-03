@@ -1,0 +1,53 @@
+{
+  "schemaVersion": 1,
+  "messageId": "message-fixture-v1",
+  "role": "assistant",
+  "createdAt": "2026-08-10T12:00:00.000Z",
+  "content": [
+    {
+      "type": "thinking",
+      "text": "fixture reasoning",
+      "signature": "opaque-thinking-v1",
+      "redacted": false
+    },
+    {
+      "type": "toolCall",
+      "toolCallId": "call-fixture-v1",
+      "toolName": "read_file",
+      "arguments": { "path": "README.md" },
+      "thoughtSignature": "opaque-tool-v1"
+    }
+  ],
+  "provider": {
+    "api": "openai-responses",
+    "provider": "openai",
+    "model": "fixture-model-v1",
+    "configKey": "fixture-config-v1",
+    "responseId": "response-fixture-v1"
+  },
+  "assistant": { "stopReason": "toolUse" },
+  "usage": {
+    "inputTokens": 100,
+    "outputTokens": 20,
+    "cacheReadTokens": 80,
+    "cacheWriteTokens": 0,
+    "reasoningTokens": 10,
+    "totalTokens": 200,
+    "costUsd": {
+      "input": 0.001,
+      "output": 0.002,
+      "cacheRead": 0.0001,
+      "cacheWrite": 0,
+      "total": 0.0031
+    }
+  },
+  "extensions": {
+    "providerBlocks": [
+      {
+        "provider": "openai",
+        "kind": "fixture.provider.block",
+        "data": { "opaque": "retained-v1" }
+      }
+    ]
+  }
+}

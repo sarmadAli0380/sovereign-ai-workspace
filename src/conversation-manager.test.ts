@@ -7,6 +7,9 @@ import {
   ConversationManager,
   DEFAULT_RESERVE_TOKENS,
 } from "./conversation-manager.ts";
+import { ContextCompilationError } from "./context/context-compiler.ts";
+import { runtimeMessageToProductEnvelope } from "./messages/codec.ts";
+import type { MessageRepository, StoredMessage } from "./storage/repositories/messages.ts";
 import { estimateContextTokens, type TruncationStrategy } from "./truncation.ts";
 
 const usage: Usage = {
@@ -43,7 +46,6 @@ test("wraps one Context, exposed via getContext()", () => {
     systemPrompt: "You are helpful.",
     tools: [{ name: "t", description: "d", parameters: Type.Object({}) }],
   });
-
   const context = cm.getContext();
   assert.equal(context.systemPrompt, "You are helpful.");
   assert.equal(context.tools?.length, 1);
@@ -99,7 +101,7 @@ test("rejects an unusable tool-result cap", () => {
   );
 });
 
-test("truncation runs on every append, not lazily before a call", () => {
+test("projection strategy runs for the provider view, not durable append", () => {
   const calls: number[] = [];
   const spy: TruncationStrategy = {
     truncate(messages) {
@@ -113,10 +115,13 @@ test("truncation runs on every append, not lazily before a call", () => {
   cm.append(user("b"));
   cm.append(user("c"));
 
-  assert.deepEqual(calls, [1, 2, 3]);
+  assert.deepEqual(calls, []);
+  assert.equal(cm.getHistory().length, 3);
+  assert.equal(cm.getProviderHistory().length, 3);
+  assert.deepEqual(calls, [3]);
 });
 
-test("the Context stays within budget as messages accumulate", () => {
+test("the provider Context stays within budget as complete history accumulates", () => {
   const cm = new ConversationManager({
     contextWindow: 2_000,
     maxToolResultChars: 500,
@@ -125,16 +130,18 @@ test("the Context stays within budget as messages accumulate", () => {
   for (let i = 0; i < 50; i++) cm.append(user(`message ${i} `.repeat(20)));
 
   assert.ok(cm.getEstimatedTokens() <= cm.getBudgetTokens());
-  assert.ok(cm.getHistory().length < 50);
+  assert.equal(cm.getHistory().length, 50);
+  assert.ok(cm.getProviderHistory().length < 50);
 });
 
-test("a custom strategy is used instead of drop-oldest", () => {
+test("a custom strategy is used for provider projection instead of drop-oldest", () => {
   const keepLastOnly: TruncationStrategy = {
     truncate: (messages) => messages.slice(-1),
   };
   const cm = new ConversationManager({ contextWindow: 200_000, strategy: keepLastOnly });
   cm.appendAll([user("a"), user("b"), user("c")]);
-  assert.equal(cm.getHistory().length, 1);
+  assert.equal(cm.getHistory().length, 3);
+  assert.equal(cm.getProviderHistory().length, 1);
 });
 
 // --- tool-result capping (decision 1: separate from, and prior to, truncation)
@@ -272,9 +279,9 @@ test("REGRESSION (1.8): the overhead is charged against the truncation budget", 
     cm.append(user("o".repeat(300)));
   }
 
-  assert.equal(withoutPrompt.getHistory().length, 3, "control: all three fit the raw budget");
+  assert.equal(withoutPrompt.getProviderHistory().length, 3, "control: all three fit the raw budget");
   assert.ok(
-    withPrompt.getHistory().length < 3,
+    withPrompt.getProviderHistory().length < 3,
     "the same three messages must not fit once the prompt is charged",
   );
   assert.ok(withPrompt.getEstimatedTokens() <= withPrompt.getBudgetTokens());
@@ -391,9 +398,9 @@ test("truncation invalidates the anchor", () => {
   assert.equal(cm.getBudgetUsage().source, "anchored");
 
   // Enough to force eviction of the anchored prefix: budget is 900 and the
-  // anchor allows ~904 heuristic tokens, so one 3000-char message (~1004)
-  // overruns it on its own.
-  cm.append(user("b".repeat(3_000)));
+  // anchor allows ~904 heuristic tokens, so one 2400-char message (~804)
+  // forces the prefix out while still fitting after the anchor is dropped.
+  cm.append(user("b".repeat(2_400)));
 
   assert.equal(
     cm.getBudgetUsage().source,
@@ -423,9 +430,9 @@ test("the anchor tightens the truncation budget when the heuristic ran low", () 
   const anchored = build(2_800);
 
   assert.ok(
-    anchored.getHistory().length < unanchored.getHistory().length,
+    anchored.getProviderHistory().length < unanchored.getProviderHistory().length,
     `a measured 2800 must evict more than the heuristic did ` +
-      `(${anchored.getHistory().length} vs ${unanchored.getHistory().length})`,
+      `(${anchored.getProviderHistory().length} vs ${unanchored.getProviderHistory().length})`,
   );
 });
 
@@ -444,9 +451,9 @@ test("the anchor loosens the truncation budget when the heuristic ran high", () 
   const anchored = build(120);
 
   assert.ok(
-    anchored.getHistory().length > unanchored.getHistory().length,
+    anchored.getProviderHistory().length > unanchored.getProviderHistory().length,
     `a measured 120 must keep more than a 3000-token heuristic guess ` +
-      `(${anchored.getHistory().length} vs ${unanchored.getHistory().length})`,
+      `(${anchored.getProviderHistory().length} vs ${unanchored.getProviderHistory().length})`,
   );
 });
 
@@ -539,10 +546,19 @@ test("PROPERTY: the budget invariant holds after every append, anchored or not",
       } else {
         cm.append(user("x".repeat(rand(4_000))));
       }
-      const { tokens } = cm.getBudgetUsage();
+      let tokens: number;
+      try {
+        tokens = cm.getBudgetUsage().tokens;
+      } catch (error) {
+        assert.ok(
+          error instanceof ContextCompilationError,
+          `unexpected error ${(error as Error).message}`,
+        );
+        continue;
+      }
       assert.ok(
-        tokens <= cm.getBudgetTokens() || cm.getHistory().length === 1,
-        `trial ${trial} step ${i}: ${tokens} > ${cm.getBudgetTokens()} with ${cm.getHistory().length} messages`,
+        tokens <= cm.getBudgetTokens() || cm.getProviderHistory().length === 1,
+        `trial ${trial} step ${i}: ${tokens} > ${cm.getBudgetTokens()} with ${cm.getProviderHistory().length} provider messages`,
       );
     }
   }
@@ -594,6 +610,7 @@ test("REGRESSION: mutating the caller's tools array cannot desync the overhead",
   const tools = [{ name: "a", description: "d", parameters: Type.Object({}) }];
   const cm = new ConversationManager({ contextWindow: 200_000, tools });
   const overheadBefore = cm.getOverheadTokens();
+  cm.append(user("hello"));
 
   tools.push({ name: "b", description: "d".repeat(500), parameters: Type.Object({}) });
 
@@ -622,4 +639,120 @@ test("REGRESSION: append owns the message instead of retaining a mutable alias",
 
   assert.equal(cm.getHistory()[0]?.role, "user");
   assert.equal((cm.getHistory()[0] as { content: string }).content, "original");
+});
+
+// --- B2: complete durable history versus bounded provider projection
+
+function storedRuntimeMessages(messages: readonly Message[]): StoredMessage[] {
+  return messages.map((message, index) => ({
+    conversationId: "conversation-1",
+    seq: index,
+    message: runtimeMessageToProductEnvelope(message, {
+      messageId: `message-${index}`,
+      configKey: "faux-default",
+    }),
+    storedAt: new Date(message.timestamp).toISOString(),
+  }));
+}
+
+function fakeMessageRepository(rows: readonly StoredMessage[]): MessageRepository {
+  return {
+    async listAllCurrent() {
+      return [...rows];
+    },
+    async listCurrent(_conversationId: string, options: { afterSeq?: number; limit?: number } = {}) {
+      return rows
+        .filter((row) => row.seq > (options.afterSeq ?? -1))
+        .slice(0, options.limit ?? rows.length);
+    },
+  } as unknown as MessageRepository;
+}
+
+test("B2: reload keeps complete current history and projects a bounded provider context", async () => {
+  const rows = storedRuntimeMessages(Array.from({ length: 30 }, (_, index) => user(`m${index} `.repeat(50))));
+  const cm = await ConversationManager.loadCurrent({
+    conversationId: "conversation-1",
+    repository: fakeMessageRepository(rows),
+    contextWindow: 2_000,
+  });
+
+  assert.equal(cm.getHistory().length, 30);
+  assert.ok(cm.getProviderHistory().length < 30);
+  assert.ok(cm.compileContext().allocation.totalInputTokens <= cm.getBudgetTokens());
+});
+
+test("B2: full reload rebuilds an anchor, while partial reload is estimated", async () => {
+  const rows = storedRuntimeMessages([
+    user("first"),
+    assistantWithUsage("anchored", 900),
+    user("after"),
+  ]);
+
+  const full = await ConversationManager.loadCurrent({
+    conversationId: "conversation-1",
+    repository: fakeMessageRepository(rows),
+    contextWindow: 200_000,
+  });
+  assert.equal(full.getBudgetUsage().source, "anchored");
+
+  const partial = await ConversationManager.loadCurrent({
+    conversationId: "conversation-1",
+    repository: fakeMessageRepository(rows),
+    afterSeq: 0,
+    contextWindow: 200_000,
+  });
+  assert.equal(partial.getHistory().length, 2);
+  assert.equal(partial.getBudgetUsage().source, "estimated");
+});
+
+test("B2: reload uses the current-message view, so superseded rows supplied by storage stay out", async () => {
+  const current = storedRuntimeMessages([user("new"), assistantWithUsage("current", 80)]);
+  const cm = await ConversationManager.loadCurrent({
+    conversationId: "conversation-1",
+    repository: fakeMessageRepository(current),
+    contextWindow: 200_000,
+  });
+
+  assert.deepEqual(
+    cm.getHistory().map((message) =>
+      message.role === "user"
+        ? (Array.isArray(message.content) ? message.content[0] : message.content)
+        : message.role === "assistant"
+          ? message.content[0]
+          : undefined,
+    ),
+    [{ type: "text", text: "new" }, { type: "text", text: "current" }],
+  );
+});
+
+test("B2: reload and projection keep a tool call/result span atomic", async () => {
+  const toolCall: AssistantMessage = {
+    ...assistantWithUsage("", 200),
+    content: [{ type: "toolCall", id: "call-atomic", name: "read_file", arguments: {} }],
+    stopReason: "toolUse",
+  };
+  const result = toolResult("tool output", "call-atomic");
+  const runtime = [
+    ...Array.from({ length: 20 }, (_, index) => user(`old-${index}-${"x".repeat(200)}`)),
+    toolCall,
+    result,
+    user("newest"),
+  ];
+  const cm = await ConversationManager.loadCurrent({
+    conversationId: "conversation-1",
+    repository: fakeMessageRepository(storedRuntimeMessages(runtime)),
+    contextWindow: 1_200,
+  });
+
+  assert.equal(cm.getHistory().length, runtime.length);
+  const providerHistory = cm.getProviderHistory();
+  const hasCall = providerHistory.some(
+    (message) =>
+      message.role === "assistant" &&
+      message.content.some((block) => block.type === "toolCall" && block.id === "call-atomic"),
+  );
+  const hasResult = providerHistory.some(
+    (message) => message.role === "toolResult" && message.toolCallId === "call-atomic",
+  );
+  assert.equal(hasResult, hasCall, "provider projection must retain or drop the span together");
 });

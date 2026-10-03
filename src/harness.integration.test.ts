@@ -19,11 +19,36 @@ import {
   fauxToolCall,
 } from "@earendil-works/pi-ai/providers/faux";
 import { parseConfig } from "./config.ts";
+import { CapabilityPolicy } from "./policy.ts";
 import { loadModel } from "./load-model.ts";
 import { validateContext } from "./validate-context.ts";
 import { ConversationManager } from "./conversation-manager.ts";
 import { ToolRegistry, dispatchToolCalls } from "./tool-registry.ts";
 import type { HarnessResult } from "./types.ts";
+
+const toolPolicy = new CapabilityPolicy({
+  rules: [{
+    deploymentId: "*",
+    roleId: "*",
+    workspaceId: "*",
+    capability: "*",
+    decision: "allow",
+    reasonCode: "integration.allowed",
+  }],
+});
+const dispatchOptions = {
+  policy: toolPolicy,
+  policyContext: { deploymentId: "test", roleId: "test", workspaceId: "test" },
+};
+const controls = {
+  capabilities: ["net"] as const,
+  risk: "low" as const,
+  timeoutMs: 1_000,
+  maxOutputChars: 200_000,
+  concurrencyCost: 1,
+  sideEffect: "none" as const,
+  idempotency: "natural" as const,
+};
 
 function setup() {
   const faux = fauxProvider({
@@ -49,6 +74,7 @@ function setup() {
       description: "Get the current weather for a city",
       parameters: Type.Object({ city: Type.String() }),
     },
+    controls,
     async execute(args) {
       return { content: [{ type: "text", text: `18°C and sunny in ${String(args["city"])}` }] };
     },
@@ -103,7 +129,7 @@ test("full cycle: request → tool call → dispatch → tool result → final a
   assert.equal(toolCalls[0]?.name, "get_weather");
 
   // 1.6 — dispatch returns results and does not append them itself.
-  const results = await dispatchToolCalls(toolCalls, registry);
+  const results = await dispatchToolCalls(toolCalls, registry, dispatchOptions);
   assert.equal(results.length, 1);
   assert.equal(results[0]?.isError, false);
   assert.equal(results[0]?.toolCallId, "call-1");
@@ -175,6 +201,7 @@ test("a failing tool does not break the cycle", async () => {
 
   registry.register({
     definition: { name: "boom", description: "fails", parameters: Type.Object({}) },
+    controls,
     async execute() {
       throw new Error("tool exploded");
     },
@@ -202,7 +229,7 @@ test("a failing tool does not break the cycle", async () => {
   conversation.append(first);
 
   const toolCalls = first.content.filter((b): b is ToolCall => b.type === "toolCall");
-  const results = await dispatchToolCalls(toolCalls, registry);
+  const results = await dispatchToolCalls(toolCalls, registry, dispatchOptions);
 
   // The successful call's result survives its sibling's failure.
   assert.equal(results.length, 2);
@@ -220,6 +247,9 @@ test("an oversized tool result is capped before it reaches the next call", async
   const registry = new ToolRegistry();
   registry.register({
     definition: { name: "read_file", description: "reads", parameters: Type.Object({}) },
+    // This fixture isolates ConversationManager's separate content cap. The
+    // A2.2 dispatcher limit is deliberately higher than the generated result.
+    controls: { ...controls, capabilities: ["fs.read"], maxOutputChars: 300_000 },
     async execute() {
       return { content: [{ type: "text", text: "x".repeat(200_000) }] };
     },
@@ -241,7 +271,7 @@ test("an oversized tool result is capped before it reaches the next call", async
   conversation.append(first);
 
   const toolCalls = first.content.filter((b): b is ToolCall => b.type === "toolCall");
-  conversation.appendAll(await dispatchToolCalls(toolCalls, registry));
+  conversation.appendAll(await dispatchToolCalls(toolCalls, registry, dispatchOptions));
 
   const stored = conversation.getHistory().find((m) => m.role === "toolResult");
   assert.ok(stored);

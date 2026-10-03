@@ -6,5 +6,11 @@ dist/
 .harness-credentials.json
 .env
 .env.*
+!deployment/env.example
+
+# Deployment-owned data and secrets.
+deployment/backups/
+deployment/secrets/*
+!deployment/secrets/README.md
 
 .DS_Store

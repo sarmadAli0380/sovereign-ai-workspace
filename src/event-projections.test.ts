@@ -17,6 +17,7 @@ import {
   type RunEventPayloadMap,
   type RunEventType,
 } from "./events.ts";
+import { PRODUCT_MESSAGE_SCHEMA_VERSION, type ProductMessageBlock } from "./messages/envelope.ts";
 
 const occurredAt = "2026-08-10T12:00:00.000Z";
 
@@ -43,15 +44,34 @@ function event<TType extends RunEventType>(
   } as RunEventOf<TType>;
 }
 
+function productAssistantMessage(
+  content: readonly ProductMessageBlock[],
+  messageId = "message-1",
+) {
+  return {
+    schemaVersion: PRODUCT_MESSAGE_SCHEMA_VERSION,
+    messageId,
+    role: "assistant" as const,
+    createdAt: occurredAt,
+    content,
+    provider: { api: "openai-completions", provider: "ollama", model: "qwen3:4b" },
+    assistant: { stopReason: "stop" as const },
+    usage: {
+      inputTokens: 1,
+      outputTokens: 2,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      totalTokens: 3,
+      costUsd: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+    },
+  };
+}
+
 test("UI and persistence projections retain authorized content in owned snapshots", () => {
   const original = event(
     "message.completed",
     {
-      messageId: "message-1",
-      role: "assistant",
-      content: [{ type: "text", text: "authorized-content" }],
-      provider: "ollama",
-      model: "qwen3:4b",
+      message: productAssistantMessage([{ type: "text", text: "authorized-content" }]),
     },
     { extensions: { providerTrace: "full-only-extension" } },
   );
@@ -63,34 +83,31 @@ test("UI and persistence projections retain authorized content in owned snapshot
   assert.match(JSON.stringify(ui), /authorized-content/);
   assert.match(JSON.stringify(persistence), /full-only-extension/);
 
-  (ui.payload.content as Array<Record<string, string>>)[0]!["text"] = "mutated";
+  (ui.payload.message.content as unknown as Array<Record<string, string>>)[0]!["text"] = "mutated";
   assert.match(JSON.stringify(original), /authorized-content/);
   assert.doesNotMatch(JSON.stringify(original), /mutated/);
 });
 
 test("audit projection replaces message content with a deterministic fingerprint", () => {
-  const content = { b: "two", a: "one" };
+  const content: readonly ProductMessageBlock[] = [{ type: "text", text: "one-two" }];
   const original = event("message.completed", {
-    messageId: "message-1",
-    role: "assistant",
-    content,
-    provider: "ollama",
-    model: "qwen3:4b",
+    message: productAssistantMessage(content),
   });
   const audit = projectRunEvent(original, "audit");
   const payload = audit.payload as AuditMessageCompletedPayload;
 
   assert.equal(audit.audience, "audit");
-  assert.equal(payload.contentHash, fingerprintContent({ a: "one", b: "two" }).sha256);
+  assert.equal(
+    payload.contentHash,
+    fingerprintContent({ content } as unknown as import("./events.ts").JsonValue).sha256,
+  );
   assert.ok(payload.contentBytes > 0);
   assert.doesNotMatch(JSON.stringify(audit), /one|two/);
 });
 
 test("operational projection reports size but omits content hashes", () => {
   const original = event("message.completed", {
-    messageId: "message-1",
-    role: "assistant",
-    content: "private-message-canary",
+    message: productAssistantMessage([{ type: "text", text: "private-message-canary" }]),
   });
   const operational = projectRunEvent(original, "operational");
   const payload = operational.payload as OperationalMessageCompletedPayload;
@@ -99,6 +116,36 @@ test("operational projection reports size but omits content hashes", () => {
   assert.equal(typeof payload.contentBytes, "number");
   assert.equal("contentHash" in payload, false);
   assert.doesNotMatch(JSON.stringify(operational), /private-message-canary/);
+});
+
+test("provider extension blocks stay in full projections and never enter audit or logs", () => {
+  const message = {
+    ...productAssistantMessage([{ type: "text", text: "visible-answer" }]),
+    extensions: {
+      providerBlocks: [
+        {
+          provider: "openai",
+          kind: "encrypted_reasoning",
+          data: { payload: "provider-extension-secret-canary" },
+        },
+      ],
+    },
+  };
+  const original = event("message.completed", { message });
+
+  assert.match(JSON.stringify(projectRunEvent(original, "ui")), /provider-extension-secret-canary/);
+  assert.match(
+    JSON.stringify(projectRunEvent(original, "persistence")),
+    /provider-extension-secret-canary/,
+  );
+  assert.doesNotMatch(
+    JSON.stringify(projectRunEvent(original, "audit")),
+    /provider-extension-secret-canary/,
+  );
+  assert.doesNotMatch(
+    JSON.stringify(projectRunEvent(original, "operational")),
+    /provider-extension-secret-canary/,
+  );
 });
 
 test("streaming deltas are ephemeral and never enter persistence or audit", () => {
@@ -151,6 +198,8 @@ test("tool results, decision detail, and failure detail are schema-redacted", ()
     event("tool.decision", {
       toolCallId: "call-1",
       toolName: "read_file",
+      capability: "fs.read",
+      capabilities: ["fs.read"],
       decision: "deny",
       reasonCode: "policy.denied",
       detail: "decision-detail-canary",
@@ -176,6 +225,16 @@ test("tool results, decision detail, and failure detail are schema-redacted", ()
       contentEvent.type,
     );
   }
+
+  const projectedDecision = projectRunEvent(contentEvents[1], "audit");
+  assert.deepEqual(projectedDecision.payload, {
+    toolCallId: "call-1",
+    toolName: "read_file",
+    capability: "fs.read",
+    capabilities: ["fs.read"],
+    decision: "deny",
+    reasonCode: "policy.denied",
+  });
 });
 
 test("extensions are retained for full audiences and dropped from metadata audiences", () => {

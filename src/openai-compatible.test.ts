@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import type { Model } from "@earendil-works/pi-ai";
 import { openAICompatibleProvider, parseLocalProviders } from "./openai-compatible.ts";
 
 const valid = {
@@ -158,6 +159,23 @@ test("the parsed spec registers under the object key", () => {
   const provider = openAICompatibleProvider(spec!);
   assert.equal(provider.id, "ollama");
   assert.equal(provider.getModels()[0]?.provider, "ollama");
+  const model = provider.getModels()[0] as Model<"openai-completions">;
+  assert.equal(model.compat?.supportsDeveloperRole, false);
+});
+
+test("self-hosted servers use portable system messages unless explicitly overridden", () => {
+  const [spec] = parseLocalProviders(
+    {
+      local: {
+        baseUrl: "http://localhost:11434/v1",
+        compat: { supportsDeveloperRole: true },
+        models: [{ id: "m", contextWindow: 8192, maxTokens: 2048 }],
+      },
+    },
+    "t",
+  );
+  const model = openAICompatibleProvider(spec!).getModels()[0] as Model<"openai-completions">;
+  assert.equal(model.compat?.supportsDeveloperRole, true);
 });
 
 test("the shipped local-providers.json is valid", async () => {

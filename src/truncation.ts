@@ -19,6 +19,8 @@ export interface TruncationStrategy {
    * Must never separate a ToolCall from its ToolResultMessage.
    */
   truncate(messages: Message[], budgetTokens: number): Message[];
+  /** Identifies synthetic projection metadata so source-retention counts stay exact. */
+  isDerivedMessage?: (message: Message) => boolean;
 }
 
 /**

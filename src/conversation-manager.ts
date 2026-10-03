@@ -8,47 +8,25 @@
  *     separately from (and prior to) whole-conversation truncation.
  *  2. Truncation is a pluggable strategy; drop-oldest is the default.
  *  3. This is a stateful class wrapping one `Context`.
- *  4. Truncation runs on every `append()`, not lazily before a call — so
- *     the Context is always within budget and nothing can build up and
- *     then blow the window right as a call goes out.
+ * B2 revises decision 4 for the product: complete conversation history is
+ * durable, and truncation is a bounded provider projection computed for
+ * each call. `append()` must not delete history.
  */
 
 import type { Context, Message, TextContent, ToolResultMessage } from "@earendil-works/pi-ai";
+import { cloneData } from "./clone-data.ts";
+import {
+  ContextCompiler,
+  type ContextBudgetSource,
+  type CompiledProviderContext,
+} from "./context/context-compiler.ts";
 import {
   dropOldestStrategy,
-  estimateContextTokens,
   estimateOverheadTokens,
   type TruncationStrategy,
 } from "./truncation.ts";
-
-/**
- * Clone the data-only message/schema graph while preserving symbol-keyed
- * TypeBox metadata. `structuredClone()` drops TypeBox's symbol properties,
- * and JSON cloning would do the same, so neither is safe for tool schemas.
- */
-function cloneData<T>(value: T, seen = new Map<object, unknown>()): T {
-  if (typeof value !== "object" || value === null) return value;
-
-  const existing = seen.get(value);
-  if (existing !== undefined) return existing as T;
-
-  if (Array.isArray(value)) {
-    const copy: unknown[] = [];
-    seen.set(value, copy);
-    for (const item of value) copy.push(cloneData(item, seen));
-    return copy as T;
-  }
-
-  const copy = Object.create(Object.getPrototypeOf(value)) as object;
-  seen.set(value, copy);
-  for (const key of Reflect.ownKeys(value)) {
-    const descriptor = Object.getOwnPropertyDescriptor(value, key);
-    if (!descriptor) continue;
-    if ("value" in descriptor) descriptor.value = cloneData(descriptor.value, seen);
-    Object.defineProperty(copy, key, descriptor);
-  }
-  return copy as T;
-}
+import { productEnvelopeToRuntimeMessage } from "./messages/codec.ts";
+import type { MessageRepository } from "./storage/repositories/messages.ts";
 
 function assertNonNegativeWholeNumber(name: string, value: number): void {
   if (!Number.isFinite(value) || !Number.isInteger(value) || value < 0) {
@@ -122,7 +100,7 @@ export function resolveReserveTokens(
  * different error characteristics, and a caller debugging an unexpected
  * truncation needs to know which one it got.
  */
-export type BudgetSource = "anchored" | "estimated";
+export type BudgetSource = ContextBudgetSource;
 
 export interface BudgetUsage {
   tokens: number;
@@ -187,6 +165,14 @@ export interface ConversationManagerOptions {
   strategy?: TruncationStrategy;
 }
 
+export interface LoadConversationOptions extends ConversationManagerOptions {
+  conversationId: string;
+  repository: MessageRepository;
+  /** Omit both range fields to load the complete current history. */
+  afterSeq?: number;
+  limit?: number;
+}
+
 /**
  * Caps a tool result's text content to `maxChars` total across all blocks.
  *
@@ -245,6 +231,7 @@ export function capToolResult(
 
 export class ConversationManager {
   private context: Context;
+  private readonly compiler: ContextCompiler;
   /** contextWindow minus reserveTokens. Covers the whole Context. */
   private readonly budget: number;
   /**
@@ -256,15 +243,13 @@ export class ConversationManager {
    * for a value that cannot change.
    */
   private readonly overheadTokens: number;
-  /** What is left of `budget` for messages, after the overhead floor. */
-  private readonly messageBudget: number;
   private readonly maxToolResultChars: number;
-  private readonly strategy: TruncationStrategy;
+  private loadedFromStart = true;
   /**
    * The most recent provider-measured input size, if there is one.
    *
-   * Undefined until a response reports usage, and again after any
-   * truncation — see `append()`.
+   * Undefined until a response reports usage, or after a partial load where
+   * the measured prefix is unavailable.
    */
   private anchor: UsageAnchor | undefined;
 
@@ -307,7 +292,7 @@ export class ConversationManager {
     }
 
     this.maxToolResultChars = options.maxToolResultChars ?? DEFAULT_MAX_TOOL_RESULT_CHARS;
-    this.strategy = options.strategy ?? dropOldestStrategy;
+    const strategy = options.strategy ?? dropOldestStrategy;
 
     this.context = {
       ...(options.systemPrompt !== undefined ? { systemPrompt: options.systemPrompt } : {}),
@@ -319,14 +304,21 @@ export class ConversationManager {
       // A copy is what makes that promise true rather than aspirational.
       ...(options.tools !== undefined ? { tools: cloneData(options.tools) } : {}),
     };
+    this.compiler = new ContextCompiler({
+      contextWindow: options.contextWindow,
+      outputReserveTokens: reserve,
+      ...(options.systemPrompt !== undefined ? { systemPrompt: options.systemPrompt } : {}),
+      ...(options.tools !== undefined ? { tools: options.tools } : {}),
+      strategy,
+    });
 
     // 1.8: the system prompt and tool schemas are sent on every request and
     // no strategy can drop them, so they come off the budget up front rather
     // than being handed to truncation as if they were negotiable.
     this.overheadTokens = estimateOverheadTokens(this.context);
-    this.messageBudget = this.budget - this.overheadTokens;
+    const messageBudget = this.budget - this.overheadTokens;
 
-    if (this.messageBudget <= 0) {
+    if (messageBudget <= 0) {
       // A conversation that can never hold a single message is a
       // configuration error, not a runtime condition — a caller registering
       // this many tools against this window has nothing to send.
@@ -338,10 +330,22 @@ export class ConversationManager {
     }
   }
 
-  /**
-   * Appends a message, capping it first if it's a tool result, then
-   * re-truncating the whole conversation.
-   */
+  static async loadCurrent(options: LoadConversationOptions): Promise<ConversationManager> {
+    const isCompleteLoad = options.afterSeq === undefined && options.limit === undefined;
+    const rows = isCompleteLoad
+      ? await options.repository.listAllCurrent(options.conversationId)
+      : await options.repository.listCurrent(options.conversationId, {
+          ...(options.afterSeq !== undefined ? { afterSeq: options.afterSeq } : {}),
+          ...(options.limit !== undefined ? { limit: options.limit } : {}),
+        });
+    const manager = new ConversationManager(options);
+    manager.context.messages = rows.map((row) => productEnvelopeToRuntimeMessage(row.message));
+    manager.loadedFromStart = isCompleteLoad || (options.afterSeq ?? -1) === -1;
+    manager.rebuildAnchor();
+    return manager;
+  }
+
+  /** Appends a message to complete history, capping tool results first. */
   append(message: Message): void {
     // Own the stored value. Otherwise a caller can mutate a message after
     // append and bypass both token accounting and tool-result capping.
@@ -349,72 +353,25 @@ export class ConversationManager {
     const toAppend =
       owned.role === "toolResult" ? capToolResult(owned, this.maxToolResultChars) : owned;
 
-    const previous = this.context.messages;
-    previous.push(toAppend);
+    this.context.messages.push(toAppend);
 
-    // Anchor before truncating: this measurement describes a request that
-    // has already gone out, so it is a fact about the past regardless of
-    // what truncation is about to do to the future. A response that carries
-    // no usable usage does NOT clear the anchor — it simply fails to
-    // advance it, and the estimated span widens by one turn. Usage absence
-    // is a per-response transport event, not a provider losing the ability
-    // to report.
-    const anchored = anchorFrom(toAppend, previous.length - 1);
+    // A response that carries no usable usage does NOT clear the anchor —
+    // it simply fails to advance it, and the estimated span widens by one
+    // turn. A partial load cannot safely anchor because the measured prefix
+    // may be outside memory.
+    const anchored = this.loadedFromStart
+      ? anchorFrom(toAppend, this.context.messages.length - 1)
+      : undefined;
     if (anchored) this.anchor = anchored;
-
-    let kept = this.strategy.truncate(previous, this.truncationBudget());
-
-    // Truncation invalidates the anchor: its token count covered messages
-    // that are no longer here, so it now describes a conversation that does
-    // not exist. Reducing it correctly is possible but fiddly and easy to
-    // get subtly wrong; dropping it is conservative and self-healing, since
-    // the very next response re-anchors.
-    if (kept.length !== previous.length || kept[0] !== previous[0]) {
-      this.anchor = undefined;
-
-      // ...and then truncate AGAIN, against the unanchored budget.
-      //
-      // The first pass ran against a budget widened by the anchor. Once the
-      // anchor is gone that allowance is gone with it, and the set it kept
-      // can be well over the plain budget — measured at 4013 tokens against
-      // a 3000 budget. Leaving it would break decision 4 in this class's
-      // doc comment ("the Context is always within budget") at the worst
-      // possible moment, since `append()` is the last thing to run before a
-      // call goes out. The old code self-healed on the *next* append, one
-      // turn too late.
-      kept = this.strategy.truncate(kept, this.messageBudget);
-    }
-
-    this.context.messages = kept;
   }
 
-  /**
-   * The budget handed to the truncation strategy, in the strategy's own
-   * units.
-   *
-   * A strategy measures the whole message list with the heuristic (1.5's
-   * contract, unchanged). When an anchor exists, the prefix it covers has a
-   * *measured* cost that the heuristic will get wrong — so rather than
-   * change the strategy interface, the budget is shifted by the difference:
-   * give back whatever heuristic weight the anchored prefix carries, and
-   * take away what it actually cost.
-   *
-   *   allowed = budget − anchor.tokens + heuristic(anchored prefix)
-   *
-   * The strategy then enforces `heuristic(kept) <= allowed`, which reduces
-   * exactly to `heuristic(suffix) <= budget − anchor.tokens` — the
-   * condition we want — for as long as it keeps the prefix intact. If it
-   * drops into the prefix, the anchor is invalidated above and the next
-   * turn re-derives everything.
-   *
-   * Note `this.budget`, not `this.messageBudget`: the anchor is a measured
-   * *request* size, so the system prompt and tool schemas are already
-   * inside it. Subtracting the overhead again would double-charge it.
-   */
-  private truncationBudget(): number {
-    if (!this.anchor) return this.messageBudget;
-    const prefix = estimateContextTokens(this.context.messages.slice(0, this.anchor.messageIndex));
-    return Math.max(0, this.budget - this.anchor.tokens + prefix);
+  private rebuildAnchor(): void {
+    this.anchor = undefined;
+    if (!this.loadedFromStart) return;
+    for (const [index, message] of this.context.messages.entries()) {
+      const anchored = anchorFrom(message, index);
+      if (anchored) this.anchor = anchored;
+    }
   }
 
   /** Convenience for the common case of appending several results at once. */
@@ -425,11 +382,8 @@ export class ConversationManager {
   /**
    * A snapshot of the history.
    *
-   * Copied rather than handed out live. `append()` pushes into the array and
-   * then replaces it wholesale on truncation, so a caller holding an earlier
-   * result ended up with a list that was neither the old history nor the
-   * current one — it had seen some appends and none of the truncation. A
-   * snapshot is at least a coherent moment in time.
+   * Copied rather than handed out live. This is the complete loaded
+   * transcript, not necessarily what the provider sees on the next call.
    */
   getHistory(): readonly Message[] {
     return cloneData(this.context.messages);
@@ -440,11 +394,29 @@ export class ConversationManager {
    *
    * Returned as an owned snapshot. Exposing the live object let callers add
    * messages or mutate the system prompt/tool schemas without re-running
-   * truncation or recomputing the cached overhead, breaking the class's core
-   * budget invariant.
+   * projection or recomputing the cached overhead, breaking the class's core
+   * provider-budget invariant.
    */
   getContext(): Context {
-    return cloneData(this.context);
+    // Preserve the manager's established empty-context contract so callers
+    // such as `step()` can run their normal pre-flight validation and return
+    // a structured invalid-context result. A provider projection is only
+    // meaningful once there is something to send.
+    if (this.context.messages.length === 0) return cloneData(this.context);
+    return this.compileContext().context;
+  }
+
+  /** The A0-P.1 provider projection, allocation evidence, and safe fingerprint. */
+  compileContext(): CompiledProviderContext {
+    return this.compiler.compile({
+      completeHistory: this.context.messages,
+      ...(this.anchor ? { historyAnchor: this.anchor } : {}),
+    });
+  }
+
+  /** The message slice used for the next provider call. */
+  getProviderHistory(): readonly Message[] {
+    return cloneData(this.compileContext().context.messages);
   }
 
   /**
@@ -473,18 +445,13 @@ export class ConversationManager {
    * conversation used to get.
    */
   getBudgetUsage(): BudgetUsage {
-    if (!this.anchor) {
+    if (this.context.messages.length === 0) {
       return {
-        tokens: estimateContextTokens(this.context.messages) + this.overheadTokens,
+        tokens: this.overheadTokens,
         source: "estimated",
       };
     }
-    return {
-      tokens:
-        this.anchor.tokens +
-        estimateContextTokens(this.context.messages.slice(this.anchor.messageIndex)),
-      source: "anchored",
-    };
+    return this.compileContext().budgetUsage;
   }
 
   /** The non-message part of the estimate: system prompt plus tool schemas. */
@@ -496,4 +463,5 @@ export class ConversationManager {
   getBudgetTokens(): number {
     return this.budget;
   }
+
 }

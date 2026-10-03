@@ -14,6 +14,7 @@ import {
   type RunEventPayloadMap,
   type RunEventType,
 } from "./events.ts";
+import { PRODUCT_MESSAGE_SCHEMA_VERSION, type ProductMessageBlock } from "./messages/envelope.ts";
 
 const occurredAt = "2026-08-10T12:00:00.000Z";
 
@@ -42,7 +43,31 @@ function event<TType extends RunEventType>(
 }
 
 const usage = { input: 1, output: 2, cacheRead: 3, cacheWrite: 4, totalTokens: 10 };
+const budget = { tokens: 100, source: "anchored" as const };
 const argumentsHash = "a".repeat(64);
+
+function productAssistantMessage(
+  messageId: string,
+  content: readonly ProductMessageBlock[] = [{ type: "text", text: "hello" }],
+) {
+  return {
+    schemaVersion: PRODUCT_MESSAGE_SCHEMA_VERSION,
+    messageId,
+    role: "assistant" as const,
+    createdAt: occurredAt,
+    content,
+    provider: { api: "openai-completions", provider: "ollama", model: "qwen3:4b" },
+    assistant: { stopReason: "stop" as const },
+    usage: {
+      inputTokens: 1,
+      outputTokens: 2,
+      cacheReadTokens: 3,
+      cacheWriteTokens: 4,
+      totalTokens: 10,
+      costUsd: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+    },
+  };
+}
 
 const fixtures: readonly RunEvent[] = [
   event("run.started", { configKey: "local-qwen", provider: "ollama", model: "qwen3:4b" }),
@@ -54,14 +79,7 @@ const fixtures: readonly RunEvent[] = [
   ),
   event(
     "message.completed",
-    {
-      messageId: "message-assistant-1",
-      role: "assistant",
-      content: [{ type: "text", text: "hello" }],
-      provider: "ollama",
-      model: "qwen3:4b",
-      usage,
-    },
+    { message: productAssistantMessage("message-assistant-1") },
     3,
   ),
   event("tool.requested", { toolCallId: "call-1", toolName: "read_file", arguments: { path: "a" } }, 4),
@@ -70,6 +88,8 @@ const fixtures: readonly RunEvent[] = [
     {
       toolCallId: "call-1",
       toolName: "read_file",
+      capability: "fs.read",
+      capabilities: ["fs.read"],
       decision: "allow",
       reasonCode: "workspace.read.allowed",
       detail: "permitted for this workspace",
@@ -105,7 +125,7 @@ const fixtures: readonly RunEvent[] = [
     },
     9,
   ),
-  event("turn.completed", { stopReason: "stop", usage }, 10),
+  event("turn.completed", { stopReason: "stop", usage, budget }, 10),
   event("run.completed", { reason: "stop", usage }, 11),
   event("run.failed", { code: "provider.unavailable", retryable: true, detail: "offline" }, 12),
   event("run.cancelled", { code: "user.cancelled", cancelledBy: "user-1", detail: "stop" }, 13),
@@ -116,6 +136,11 @@ test("every initial event payload has a valid runtime fixture", () => {
     assert.deepEqual(collectRunEventIssues(fixture), [], fixture.type);
     assert.equal(parseRunEvent(fixture), fixture);
   }
+});
+
+test("a suspended approval run is a valid terminal completion", () => {
+  const suspended = event("run.completed", { reason: "needsApproval", usage }, 11);
+  assert.deepEqual(collectRunEventIssues(suspended), []);
 });
 
 test("events round-trip through JSON without changing stable identifiers", () => {
@@ -149,6 +174,21 @@ test("allows forward data only through the declared extensions field", () => {
     collectRunEventIssues({ ...base, extensions: { vendor: { trace: "opaque" } } }),
     [],
   );
+});
+
+test("message.completed requires the versioned product message envelope", () => {
+  const legacy = event("message.completed", {
+    message: productAssistantMessage("message-1"),
+  }) as unknown as { payload: unknown };
+  legacy.payload = {
+    messageId: "message-1",
+    role: "assistant",
+    content: [{ type: "text", text: "legacy" }],
+  };
+
+  const issues = collectRunEventIssues(legacy);
+  assert.ok(issues.some((issue) => issue.includes("payload.message: is required")));
+  assert.ok(issues.some((issue) => issue.includes("payload.messageId: unknown field")));
 });
 
 test("schema-owned sensitivity cannot be weakened by the emitter", () => {
@@ -201,11 +241,12 @@ test("rejects non-JSON payloads, non-finite numbers, and circular structures", (
   assert.ok(collectRunEventIssues(invalidUsage).some((issue) => issue.includes("totalTokens")));
 
   const nonPlain = event("message.completed", {
-    messageId: "message-1",
-    role: "assistant",
-    content: new Date(occurredAt) as never,
+    message: {
+      ...productAssistantMessage("message-1"),
+      content: new Date(occurredAt) as never,
+    },
   });
-  assert.ok(collectRunEventIssues(nonPlain).some((issue) => issue.includes("plain JSON object")));
+  assert.ok(collectRunEventIssues(nonPlain).some((issue) => issue.includes("content: must be an array")));
 });
 
 test("a complete ordered run passes the sequence contract", () => {
@@ -214,10 +255,10 @@ test("a complete ordered run passes the sequence contract", () => {
     event("turn.started", {}, 20),
     event(
       "message.completed",
-      { messageId: "m1", role: "assistant", content: [{ type: "text", text: "done" }] },
+      { message: productAssistantMessage("m1", [{ type: "text", text: "done" }]) },
       30,
     ),
-    event("turn.completed", { stopReason: "stop" }, 40),
+    event("turn.completed", { stopReason: "stop", budget }, 40),
     event("run.completed", { reason: "stop" }, 50),
   ];
   assert.deepEqual(collectRunEventSequenceIssues(events, { complete: true }), []);
@@ -244,7 +285,7 @@ test("a run has exactly one terminal event and nothing may follow it", () => {
   const completed = event("run.completed", { reason: "stop" }, 2);
   const after = event(
     "message.completed",
-    { messageId: "late", role: "assistant", content: "must not exist" },
+    { message: productAssistantMessage("late", [{ type: "text", text: "must not exist" }]) },
     3,
   );
   const cancelled = event("run.cancelled", { code: "user.cancelled" }, 4);
@@ -284,7 +325,7 @@ test("PROPERTY: generated complete runs preserve ordering and terminal uniquenes
         ),
       );
     }
-    generated.push(event("turn.completed", { stopReason: "stop" }, 20 + count * 10));
+    generated.push(event("turn.completed", { stopReason: "stop", budget }, 20 + count * 10));
     generated.push(event("run.completed", { reason: seed % 2 === 0 ? "stop" : "maxTurns" }, 30 + count * 10));
 
     assert.deepEqual(collectRunEventSequenceIssues(generated, { complete: true }), [], `seed ${seed}`);

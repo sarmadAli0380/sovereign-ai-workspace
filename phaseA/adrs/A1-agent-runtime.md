@@ -1,6 +1,7 @@
 # A.1 — The agent runtime
 
-**Status:** Designed, pre-implementation (2026-08-05)
+**Status:** Designed; A1.1, A1.2, and A2.1 implemented and deterministically
+verified (2026-08-12), later Phase A slices remain pre-implementation
 **Depends on:** ADR-003 (the deliverable is a product), 1.5, 1.6, 1.7
 (`step()`), 1.8 (budget anchoring)
 **Feeds:** B (persistence subscribes to the event stream), C (the server
@@ -73,12 +74,13 @@ us.
 `step()` stays exactly one transition (1.7). `run()` is the loop:
 
 ```
-run(deps, { maxTurns, signal, onEvent }) → RunResult
+run(deps, { conversationId, causationId, maxTurns, deadline, signal, onEvent }) → RunResult
 ```
 
-It owns only what a loop owns — the turn counter, the stopping rule,
-cancellation, and event emission. It adds no autonomy the caller did not
-ask for: `maxTurns` is required, not defaulted to something generous.
+It owns only what a loop owns — identity, the turn counter, the stopping rule,
+cancellation/deadline, aggregate usage/latency, and event emission. It adds no
+autonomy the caller did not ask for: `maxTurns` and a finite deadline are
+required, not defaulted to something generous.
 
 **`step()` remains public and usable alone.** An application that wants one
 model call with no loop still gets it — that part of 1.7's "subtraction"
@@ -89,18 +91,23 @@ argument survives ADR-003 intact.
 The server, the UI, the persistence layer and the audit log all consume the
 same stream. Nothing reaches into the runtime's internals.
 
-```
-run_start   { runId, configKey, model }
-turn_start  { turn }
-message     { turn, event }        ← pi-ai's AssistantMessageEvent, tagged
-tool_start  { turn, toolCallId, name, arguments, decision }
-tool_end    { turn, toolCallId, isError, durationMs }
-turn_end    { turn, stopReason, usage, budget }
-run_end     { reason, turns, usage }
-```
+The A0 product protocol supersedes the earlier provider-shaped sketch. The
+runtime now emits `run.started`, `turn.started`, ephemeral `message.delta`,
+versioned `message.completed`, tool lifecycle events, `turn.completed`, and
+exactly one of `run.completed`, `run.failed`, or `run.cancelled`. The envelope
+carries run/conversation identity, sequence, turn, causation, audience, and
+sensitivity. `step()` can still expose every raw pi-ai attempt event directly;
+`run()` maps only renderable text/thinking deltas and the final validated
+logical outcome into the provider-independent product protocol. In particular,
+a retry attempt's raw `error` is not a terminal run event when a later attempt
+succeeds.
 
-`run_end.reason` is one of `stop` | `maxTurns` | `cancelled` | `error` |
-`needsApproval`. **Every event must be JSON-serializable**, because it goes
+`RunResult.reason` is one of `stop` | `maxTurns` | `cancelled` | `error` |
+`needsApproval` | `persistenceUnavailable`. Publishable runs end in exactly
+one `run.completed`, `run.failed`, or `run.cancelled` event. A failed required
+journal acknowledgement returns `persistenceUnavailable` without pretending a
+terminal event reached that failed boundary. **Every event must be
+JSON-serializable**, because it goes
 over SSE to a browser and into Postgres for replay. That constraint is
 stated now because retrofitting serializability is painful.
 
@@ -149,22 +156,35 @@ Five mechanisms:
 capabilities. Name-based allowlists are the same mistake as provider names
 in control flow — they don't compose and they rot.
 
+Implemented in A2.1: a registration also declares risk, timeout, output limit,
+concurrency cost, side-effect class, and idempotency strategy. Registration
+validates and snapshots this control metadata. A2.2 now enforces the declared
+timeout/output/concurrency controls and trusted caller-key idempotency.
+
 **(b) Policy evaluated before `execute()`.** Per deployment and per role:
 `allow` | `deny` | `requireApproval` for each capability. The decision is
-recorded on the `tool_start` event so the audit log gets it for free.
+recorded as its own canonical `tool.decision` event before `tool.started`, so
+the audit log receives the governing capability, complete capability set,
+decision, and stable reason code. The data-rule evaluator accepts deployment,
+authenticated role, workspace, registered controls, and normalized arguments;
+unknown inputs fail closed. Missing, unmatched, and ambiguous policy denies.
+All calls in one model turn are decided before any sibling executes, and one
+approval-required call suspends the complete batch.
 
 **(c) Workspace confinement.** Every path argument is resolved to a real
 path — following symlinks — and asserted inside the configured root before
 the handler sees it. Symlink escape is the classic bug here, and
 `path.resolve()` alone does not catch it.
 
-**(d) Timeouts, which do not exist today.** The QA pass found
-`dispatchToolCall` has no timeout: a handler that never resolves wedges
-`Promise.allSettled` and the turn forever. Per-tool timeout enforced by the
-dispatcher, surfaced as an `isError` result so the model can react.
+**(d) Timeouts.** The QA pass found `dispatchToolCall` could wedge forever.
+A2.2 now derives a per-tool deadline, aborts cooperatively, and surfaces the
+timeout as an `isError` result so the model can react. Capacity remains held
+until an uncooperative underlying handler actually settles.
 
-**(e) Output and concurrency caps.** `maxToolResultChars` already exists
-(1.5). Add a cap on concurrent tool executions per run.
+**(e) Output and concurrency caps.** A2.2 rejects oversized output before a
+result reaches lifecycle events or model context and enforces finite shared
+global/per-capability capacity using the declared cost. The older
+`maxToolResultChars` remains a separate conversation-projection cap.
 
 **(f) Active-call cancellation and timeouts.** Cancellation must reach the
 provider request and every running tool, not only retry sleeps or the outer
@@ -254,23 +274,28 @@ that journal, using event ids for idempotency.
 
 ## Definition of done
 
-- [ ] `step()` moves to `stream()` with an optional event sink; behaviour
+- [x] `step()` moves to `stream()` with an optional event sink; behaviour
       with no sink is unchanged, proven by the existing tests still passing.
-- [ ] `run()` with required `maxTurns`, cancellation, and event emission.
+- [x] `run()` with required `maxTurns` and deadline, cancellation, aggregate
+      usage/latency, canonical event emission, and one terminal reason (A1.2).
 - [x] Event protocol defined as types, with serializability, ordering,
       terminal-uniqueness, and future-version rejection tests (A0.1).
 - [x] Audience-specific UI, persistence, audit, and log projections, with a
       test proving tool arguments and message content cannot enter audit/log
       records. Streaming deltas are excluded from persistence/audit (A0.1).
-- [ ] Capability declarations on `ToolHandler`, and a policy layer evaluated
-      before `execute()`.
-- [ ] Workspace confinement with a symlink-escape test.
-- [ ] Per-tool timeouts, surfaced as `isError`.
-- [ ] Abort and timeout reach an active provider call and all running tools;
+- [x] Transport contract defines ordered in-process delivery, a required
+      acknowledgement sink, bounded optional observers, reconnect
+      checkpoints, and pure SSE mapping (A0.2). Runtime and HTTP wiring remain
+      deferred to A1 and Phase C.
+- [x] Capability declarations on `ToolHandler`, and a fail-closed policy layer
+      evaluated across the complete batch before `execute()` (A2.1).
+- [x] Workspace confinement with a symlink-escape test (A2.2).
+- [x] Per-tool timeouts, surfaced as `isError` (A2.2).
+- [x] Run abort and deadline reach an active provider call and all running tools;
       cancelled/error responses never become assistant history.
-- [ ] Approval suspend/resume round trip.
-- [ ] Built-in tools: file read/write, search, shell, HTTP — each behind its
-      capability, none on by default.
+- [x] Approval suspend/resume round trip (A3; durable repositories remain Phase B).
+- [x] Built-in tools: file read/write, search, shell, HTTP — each behind its
+      capability, none on by default (A2.3).
 - [ ] MCP client, tools entering through the same registry and policy.
 - [ ] Streaming verified live against both providers, and the event-protocol
       degradation question answered.
@@ -281,6 +306,7 @@ that journal, using event ids for idempotency.
 
 - `src/step.ts` — stream internally, optional event sink.
 - `src/tool-registry.ts` — capabilities, timeouts, policy hook.
-- New: `src/run.ts`, `src/events.ts`, `src/policy.ts`, `src/tools/`,
-  `src/mcp/`.
+- `src/run.ts` — bounded state machine and canonical event mapping.
+- New: `src/events.ts`, `src/event-transport.ts`,
+  `src/policy.ts`, `src/tools/`, `src/mcp/`.
 - Logged in `findings-log.md`.

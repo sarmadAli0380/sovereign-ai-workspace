@@ -1,0 +1,6 @@
+# syntax=docker/dockerfile:1.7
+FROM ghcr.io/amacneil/dbmate:2.35.0@sha256:e55099476e99559509846f44505d92c92d4861e699de9546a852320a7f667e0d
+
+COPY src/storage/migrations /db/migrations
+COPY deployment/bin/migrate.sh /deployment/migrate.sh
+ENTRYPOINT ["/deployment/migrate.sh"]

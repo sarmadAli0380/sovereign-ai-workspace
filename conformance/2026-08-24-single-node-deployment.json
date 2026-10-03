@@ -1,0 +1,92 @@
+{
+  "schemaVersion": 1,
+  "recordedAt": "2026-08-24T07:33:40Z",
+  "verdict": "passed-development-environment",
+  "scope": "P3.1 single-node connected provisioning, readiness, backup, and restart",
+  "environment": {
+    "client": {
+      "os": "darwin",
+      "architecture": "arm64",
+      "dockerVersion": "29.5.3"
+    },
+    "engine": {
+      "platform": "Docker Desktop 4.77.0 (228796)",
+      "os": "linux",
+      "architecture": "arm64",
+      "dockerVersion": "29.5.3",
+      "composeVersion": "5.1.4"
+    },
+    "qualification": "development evidence; repeat on the target client-owned Linux host before production"
+  },
+  "upstreamImages": {
+    "node": "node:24-bookworm-slim@sha256:3638d9a6fe4030bd716be989438248074489337ba3275657f93595428be4fc03",
+    "database": "pgvector/pgvector:0.8.6-pg18-bookworm@sha256:2ba9ca5f2e7daa0f0e7723cba1ee9167bab54efd3640516a44ac1a928dd67e7a",
+    "inference": "ollama/ollama:0.32.5@sha256:4dea9fb511947e24a84237bb636b0203abcb2ff0d3fbc7b4ff865deb91362131",
+    "dbmate": "ghcr.io/amacneil/dbmate:2.35.0@sha256:e55099476e99559509846f44505d92c92d4861e699de9546a852320a7f667e0d"
+  },
+  "builtImages": {
+    "runtime": "sovereign-ai-runtime@sha256:c5085f54138562603984106e9df63b1ef53fbba62927c4b77e6322e6802bee3b",
+    "migration": "sovereign-ai-migrate@sha256:e042151bb9304ede129c55e14d4148e8327362205957a88875bcd3e63888ab1b",
+    "modelBootstrap": "sovereign-ai-ollama-bootstrap@sha256:bfce7659c4b6f6296c0ecd33bd62e820665fc6c04277f16b8300e901e2ddd38b"
+  },
+  "checks": {
+    "staticTopologyPolicy": "passed",
+    "immutableImageBuilds": "passed",
+    "productionDependencyAudit": "passed-zero-vulnerabilities",
+    "modelBootstrapFullDigest": "passed",
+    "postgresql18Health": "passed",
+    "pgvectorVersion0_8_6": "passed",
+    "freshMigration": "passed",
+    "idempotentMigrationAfterRestart": "passed",
+    "volumeOwnership": "passed",
+    "modelLoadAt8192Context": "passed",
+    "attachmentWriteFsyncDelete": "passed",
+    "authenticatedSpoolOpen": "passed",
+    "customFormatBackup": "passed",
+    "backupArchiveReadable": "passed",
+    "postRestartReadiness": "passed",
+    "noPublishedHostPorts": "passed",
+    "steadyDataPlaneInternal": "passed",
+    "bootstrapEgressHasNoSteadyContainers": "passed"
+  },
+  "runtime": {
+    "databaseMajor": 18,
+    "pgvectorVersion": "0.8.6",
+    "migrations": [
+      "20260819000100",
+      "20260821000200"
+    ],
+    "ollamaVersion": "0.32.5",
+    "modelId": "qwen3:4b",
+    "modelDigest": "sha256:359d7dd4bcdab3d86b87d73ac27966f4dbb9f5efdfcc75d34a8764a09474fae7",
+    "servedContextWindow": 8192,
+    "pendingSpoolEntries": 0
+  },
+  "dependencies": {
+    "hono": "4.13.3",
+    "productionAuditVulnerabilities": 0
+  },
+  "backup": {
+    "file": "sovereign-ai-20260824T072358Z.dump",
+    "format": "postgres-custom",
+    "bytes": 77923,
+    "sha256": "d1bc35d9fa043028afdf4628d742c5e8f4b620649d2b4eb56cb823efb1ed958e",
+    "mode": "0600"
+  },
+  "network": {
+    "dataPlaneInternal": true,
+    "steadyServices": [
+      "database",
+      "inference"
+    ],
+    "publishedPorts": [],
+    "bootstrapEgressContainers": []
+  },
+  "observedCorrection": {
+    "initialModelLoadTimeoutMs": 120000,
+    "result": "failed closed while the CPU runner was still loading",
+    "finalFiniteModelLoadTimeoutMs": 600000,
+    "finalResult": "passed without changing digest or context requirements"
+  },
+  "containsSecretsOrClientContent": false
+}

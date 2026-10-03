@@ -22,6 +22,7 @@ import {
 } from "../src/conformance.ts";
 import { getModels, loadModel } from "../src/load-model.ts";
 import { ConversationManager } from "../src/conversation-manager.ts";
+import { CapabilityPolicy } from "../src/policy.ts";
 import { estimateContextTokens } from "../src/truncation.ts";
 import { ToolRegistry } from "../src/tool-registry.ts";
 import { step, type StepDeps, type StepResult } from "../src/step.ts";
@@ -80,6 +81,15 @@ registry.register({
       city: Type.String({ description: "The city to get weather for" }),
     }),
   },
+  controls: {
+    capabilities: ["net"],
+    risk: "low",
+    timeoutMs: 120_000,
+    maxOutputChars: 10_000,
+    concurrencyCost: 1,
+    sideEffect: "none",
+    idempotency: "natural",
+  },
   async execute(args) {
     // Fixed response — this verifies the harness's plumbing, not a weather API.
     return { content: [{ type: "text", text: `18°C and sunny in ${String(args["city"])}` }] };
@@ -115,6 +125,21 @@ const deps: StepDeps = {
   configKey,
   conversation,
   registry,
+  toolPolicy: new CapabilityPolicy({
+    rules: [{
+      deploymentId: "live-verifier",
+      roleId: "verifier",
+      workspaceId: "verification",
+      capability: "net",
+      decision: "allow",
+      reasonCode: "verification.weather-allowed",
+    }],
+  }),
+  toolPolicyContext: {
+    deploymentId: "live-verifier",
+    roleId: "verifier",
+    workspaceId: "verification",
+  },
   knownConfigKeys: Object.keys(config),
   options: {
     timeoutMs: 120_000,
